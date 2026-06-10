@@ -3,9 +3,9 @@ local pui = require("neverlose/pui")
 local gradient = require("neverlose/gradient")
 
 local logo = gradient.text_animate("M E T A S O O N", -2, {
-    color(255, 50, 50),
-    color(255, 150, 200),
-    color(255, 255, 255)
+    color(0, 150, 255),
+    color(0, 50, 120),
+    color(0, 0, 0)
 })
 
 -- UI
