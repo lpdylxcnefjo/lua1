@@ -146,6 +146,19 @@ refresh_list()
 local aa_nav = pui.create(T_AA, "\naa_nav", 1)
 local aa_list = aa_nav:list("\n", {ico("gears", "Setup"), ico("helmet-safety", "Builder"), ico("bolt", "Exploit")})
 
+-- Anti-Aim > Builder: left = team + conditions (below listbox), right = builder
+local aa_left = pui.create(T_AA, "\naa_left", 1)
+local aa_team = aa_left:combo(ico("people-group", "Choose Team"), {"T", "CT"})
+local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standing", "Moving", "Walking", "Crouching", "In Air"})
+
+local aa_right = pui.create(T_AA, "\naa_right", 2)
+local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"Automatic", "Static", "Jitter", "Spin"})
+local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Disabled", "Offset", "3-Way", "Center"})
+local aa_body = aa_right:switch(ico("infinity", "Body"), true)
+local aa_options = aa_right:combo(ico("wave-square", "Options"), {"Static", "Opposite", "Jitter", "Random"})
+
+local aa_builder_page = {aa_team, aa_state, aa_yaw, aa_modifier, aa_body, aa_options}
+
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
 local misc_list = misc_nav:list("\n", {ico("bullseye", "Ragebot"), ico("paintbrush", "Visuals"), ico("bars", "Misc")})
@@ -205,6 +218,8 @@ events.render:set(function()
 
     set_vis(home_page, main_list:get() == 1)
     set_vis(config_page, main_list:get() == 2)
+
+    set_vis(aa_builder_page, aa_list:get() == 2)
 
     local m = misc_list:get()
     set_vis(visual_page, m == 2)
