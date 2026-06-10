@@ -35,6 +35,7 @@ local IC = {
 }
 
 local T_MAIN = ico("house", "Main")
+local T_AA = ico("person-falling", "Anti-Aim")
 local T_MISC = ico("layer-group", "Misc")
 
 local function fmt_time(sec)
@@ -140,6 +141,16 @@ cfg_import:set_callback(function()
 end)
 
 refresh_list()
+
+-- Anti-Aim (own sidebar tab, between Main and Misc)
+local aa_box = pui.create(T_AA, "\naa_box", 1)
+aa_box:switch(ico("person-falling", "Enabled"), false)
+aa_box:switch(ico("arrows-left-right", "Yaw"), false)
+aa_box:switch(ico("arrows-up-down", "Pitch"), false)
+aa_box:switch(ico("rotate", "Jitter"), false)
+aa_box:switch(ico("repeat", "Inverter"), false)
+aa_box:switch(ico("person-walking", "Desync on Move"), false)
+aa_box:switch(ico("user-secret", "Fake Lag"), false)
 
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
