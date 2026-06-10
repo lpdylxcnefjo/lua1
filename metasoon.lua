@@ -14,6 +14,29 @@ local logo = gradient.text_animate("M E T A S O O N", -2, {
     color(0, 0, 0)
 })
 
+local function geticon(name)
+    local ok, g = pcall(ui.get_icon, name)
+    return (ok and g) or ""
+end
+
+local function ico(name, text)
+    local g = geticon(name)
+    if g == "" then return text end
+    return g .. "  " .. text
+end
+
+local IC = {
+    user = geticon("circle-user"),
+    code = geticon("code"),
+    total = geticon("hourglass"),
+    session = geticon("clock"),
+    kills = geticon("skull"),
+    misses = geticon("crosshairs"),
+}
+
+local T_MAIN = ico("house", "Main")
+local T_MISC = ico("layer-group", "Misc")
+
 local function fmt_time(sec)
     sec = math.floor(sec)
     return string.format("%dh %dm %ds", math.floor(sec / 3600), math.floor(sec % 3600 / 60), sec % 60)
@@ -48,33 +71,33 @@ local function set_vis(items, vis)
 end
 
 -- Main
-local main_nav = pui.create("Main", "\nmain_nav", 1)
-local main_list = main_nav:list("\n", {"Home", "Config"})
+local main_nav = pui.create(T_MAIN, "\nmain_nav", 1)
+local main_list = main_nav:list("\n", {ico("house", "Home"), ico("gear", "Config")})
 
 -- Home (3 boxes without titles)
-local home_info = pui.create("Main", "\nhome_info", 2)
+local home_info = pui.create(T_MAIN, "\nhome_info", 2)
 local lbl_user = home_info:label("Username")
 local lbl_ver = home_info:label("Version")
 
-local home_time = pui.create("Main", "\nhome_time", 2)
+local home_time = pui.create(T_MAIN, "\nhome_time", 2)
 local lbl_total = home_time:label("Total")
 local lbl_session = home_time:label("Session")
 
-local home_combat = pui.create("Main", "\nhome_combat", 2)
+local home_combat = pui.create(T_MAIN, "\nhome_combat", 2)
 local lbl_kills = home_combat:label("Kills")
 local lbl_misses = home_combat:label("Misses")
 
 local home_page = {lbl_user, lbl_ver, lbl_total, lbl_session, lbl_kills, lbl_misses}
 
 -- Config
-local cfg_box = pui.create("Main", "\nconfig", 2)
-local cfg_name = cfg_box:input("Config Name", "Type Here")
+local cfg_box = pui.create(T_MAIN, "\nconfig", 2)
+local cfg_name = cfg_box:input(ico("pen", "Config Name"), "Type Here")
 local cfg_list = cfg_box:list("Configs", {"empty"})
-local cfg_save = cfg_box:button("Save", function() end)
-local cfg_load = cfg_box:button("Load", function() end)
-local cfg_delete = cfg_box:button("Delete", function() end)
-local cfg_export = cfg_box:button("Export to clipboard", function() end)
-local cfg_import = cfg_box:button("Import from clipboard", function() end)
+local cfg_save = cfg_box:button(ico("floppy-disk", "Save"), function() end)
+local cfg_load = cfg_box:button(ico("download", "Load"), function() end)
+local cfg_delete = cfg_box:button(ico("trash", "Delete"), function() end)
+local cfg_export = cfg_box:button(ico("copy", "Export to clipboard"), function() end)
+local cfg_import = cfg_box:button(ico("paste", "Import from clipboard"), function() end)
 local config_page = {cfg_name, cfg_list, cfg_save, cfg_load, cfg_delete, cfg_export, cfg_import}
 
 local function refresh_list()
@@ -118,40 +141,40 @@ end)
 
 refresh_list()
 
--- Anti Aim
-local aa_nav = pui.create("Anti Aim", "\naa_nav", 1)
-local aa_list = aa_nav:list("\n", {"Setup", "Builder", "Exploit"})
-local aa_box = pui.create("Anti Aim", "\naa_box", 2)
-local aa_pages = {
-    {aa_box:switch("Setup", false)},
-    {aa_box:switch("Builder", false)},
-    {aa_box:switch("Exploit", false)},
+-- Misc (listbox: Ragebot / Visuals / Misc)
+local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
+local misc_list = misc_nav:list("\n", {ico("bullseye", "Ragebot"), ico("paintbrush", "Visuals"), ico("bars", "Misc")})
+
+-- Ragebot (moved here)
+local rage_box = pui.create(T_MISC, "\nrage_box", 2)
+local rage_page = {
+    rage_box:switch(ico("gears", "Setup"), false),
+    rage_box:switch(ico("helmet-safety", "Builder"), false),
+    rage_box:switch(ico("bolt", "Exploit"), false),
 }
 
--- Misc (listbox: Misc / Visual)
-local misc_nav = pui.create("Misc", "\nmisc_nav", 1)
-local misc_list = misc_nav:list("\n", {"Misc", "Visual"})
+-- Misc
+local misc_box = pui.create(T_MISC, "\nmisc_box", 2)
+local misc_page = {misc_box:switch(ico("gear", "Enabled"), false)}
 
-local misc_box = pui.create("Misc", "\nmisc_box", 2)
-local misc_page = {misc_box:switch("Enabled", false)}
-
-local vis_left = pui.create("Misc", "\nvis_left", 1)
-local vis_rtop = pui.create("Misc", "\nvis_rtop", 2)
-local vis_rbot = pui.create("Misc", "\nvis_rbot", 2)
+-- Visuals (3 boxes)
+local vis_left = pui.create(T_MISC, "\nvis_left", 1)
+local vis_rtop = pui.create(T_MISC, "\nvis_rtop", 2)
+local vis_rbot = pui.create(T_MISC, "\nvis_rbot", 2)
 local visual_page = {
-    vis_left:switch("Custom Scope", false),
-    vis_left:switch("Aspect Ratio", false),
-    vis_left:switch("Viewmodel", false),
-    vis_left:switch("500$ Indicators", false),
-    vis_left:switch("Hitmarker", false),
-    vis_rtop:switch("Watermark", false),
-    vis_rtop:switch("Keybinds", false),
-    vis_rtop:switch("Spectators", false),
-    vis_rbot:switch("Clantag", false),
-    vis_rbot:switch("Screen Indicator", false),
-    vis_rbot:switch("Manual Arrows", false),
-    vis_rbot:switch("Damage Indicator", false),
-    vis_rbot:switch("Velocity Warning", false),
+    vis_left:switch(ico("crosshairs", "Custom Scope"), false),
+    vis_left:switch(ico("expand", "Aspect Ratio"), false),
+    vis_left:switch(ico("hand", "Viewmodel"), false),
+    vis_left:switch(ico("dollar-sign", "500$ Indicators"), false),
+    vis_left:switch(ico("star", "Hitmarker"), false),
+    vis_rtop:switch(ico("bookmark", "Watermark"), false),
+    vis_rtop:switch(ico("keyboard", "Keybinds"), false),
+    vis_rtop:switch(ico("eye", "Spectators"), false),
+    vis_rbot:switch(ico("tag", "Clantag"), false),
+    vis_rbot:switch(ico("wand-magic-sparkles", "Screen Indicator"), false),
+    vis_rbot:switch(ico("left-right", "Manual Arrows"), false),
+    vis_rbot:switch(ico("list-ol", "Damage Indicator"), false),
+    vis_rbot:switch(ico("triangle-exclamation", "Velocity Warning"), false),
 }
 
 -- Events
@@ -176,18 +199,18 @@ events.render:set(function()
     if ui.get_alpha() <= 0 then return end
 
     local session = globals.realtime - session_start
-    lbl_user:name("Username: " .. common.get_username())
-    lbl_ver:name("Version: " .. VERSION)
-    lbl_total:name("Total: " .. fmt_time(store.total + session))
-    lbl_session:name("Session: " .. fmt_time(session))
-    lbl_kills:name("Kills: " .. stats.kills)
-    lbl_misses:name("Misses: " .. stats.misses)
+    lbl_user:name(IC.user .. "  Username: " .. common.get_username())
+    lbl_ver:name(IC.code .. "  Version: " .. VERSION)
+    lbl_total:name(IC.total .. "  Total: " .. fmt_time(store.total + session))
+    lbl_session:name(IC.session .. "  Session: " .. fmt_time(session))
+    lbl_kills:name(IC.kills .. "  Kills: " .. stats.kills)
+    lbl_misses:name(IC.misses .. "  Misses: " .. stats.misses)
 
     set_vis(home_page, main_list:get() == 1)
     set_vis(config_page, main_list:get() == 2)
 
-    for i, page in ipairs(aa_pages) do set_vis(page, aa_list:get() == i) end
-
-    set_vis(misc_page, misc_list:get() == 1)
-    set_vis(visual_page, misc_list:get() == 2)
+    local m = misc_list:get()
+    set_vis(rage_page, m == 1)
+    set_vis(visual_page, m == 2)
+    set_vis(misc_page, m == 3)
 end)
