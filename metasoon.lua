@@ -8,9 +8,9 @@ local logo = gradient.text_animate("M E T A S O O N", -2, {
 })
 
 -- Main
-local main_nav = pui.create("Main", "\nmain_nav", 1)
-local main_list = main_nav:list("\n", {"Home", "Rage", "Visual", "Extra", "Config"})
-local main_box = pui.create("Main", "\nmain_box", 2)
+local main_nav = pui.create("Main", "Pages", 1)
+local main_list = main_nav:list("Select", {"Home", "Rage", "Visual", "Extra", "Config"})
+local main_box = pui.create("Main", "Settings", 2)
 
 local home = {
     main_box:label("we wish you a good experience"),
@@ -48,9 +48,9 @@ local config = {
 local main_pages = {home, rage, visual, extra, config}
 
 -- Anti Aim
-local aa_nav = pui.create("Anti Aim", "\naa_nav", 1)
-local aa_list = aa_nav:list("\n", {"Setup", "Builder", "Exploit"})
-local aa_box = pui.create("Anti Aim", "\naa_box", 2)
+local aa_nav = pui.create("Anti Aim", "AA", 1)
+local aa_list = aa_nav:list("Select", {"Setup", "Builder", "Exploit"})
+local aa_box = pui.create("Anti Aim", "AA Settings", 2)
 local aa_pages = {
     { aa_box:switch("Setup", false) },
     { aa_box:switch("Builder", false) },
@@ -58,7 +58,7 @@ local aa_pages = {
 }
 
 -- Misc
-local tab_misc = pui.create("Misc", "\nmisc", 2)
+local tab_misc = pui.create("Misc", "Misc", 2)
 
 local function show_pages(pages, idx)
     for i, page in ipairs(pages) do
