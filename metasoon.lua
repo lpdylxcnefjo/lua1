@@ -142,27 +142,13 @@ end)
 
 refresh_list()
 
--- Anti-Aim (own sidebar tab, between Main and Misc)
-local aa_box = pui.create(T_AA, "\naa_box", 1)
-aa_box:switch(ico("person-falling", "Enabled"), false)
-aa_box:switch(ico("arrows-left-right", "Yaw"), false)
-aa_box:switch(ico("arrows-up-down", "Pitch"), false)
-aa_box:switch(ico("rotate", "Jitter"), false)
-aa_box:switch(ico("repeat", "Inverter"), false)
-aa_box:switch(ico("person-walking", "Desync on Move"), false)
-aa_box:switch(ico("user-secret", "Fake Lag"), false)
+-- Anti-Aim (own sidebar tab, between Main and Misc; left listbox like Misc)
+local aa_nav = pui.create(T_AA, "\naa_nav", 1)
+local aa_list = aa_nav:list("\n", {ico("gears", "Setup"), ico("helmet-safety", "Builder"), ico("bolt", "Exploit")})
 
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
 local misc_list = misc_nav:list("\n", {ico("bullseye", "Ragebot"), ico("paintbrush", "Visuals"), ico("bars", "Misc")})
-
--- Ragebot (moved here)
-local rage_box = pui.create(T_MISC, "\nrage_box", 2)
-local rage_page = {
-    rage_box:switch(ico("gears", "Setup"), false),
-    rage_box:switch(ico("helmet-safety", "Builder"), false),
-    rage_box:switch(ico("bolt", "Exploit"), false),
-}
 
 -- Misc
 local misc_box = pui.create(T_MISC, "\nmisc_box", 2)
@@ -221,7 +207,6 @@ events.render:set(function()
     set_vis(config_page, main_list:get() == 2)
 
     local m = misc_list:get()
-    set_vis(rage_page, m == 1)
     set_vis(visual_page, m == 2)
     set_vis(misc_page, m == 3)
 end)
