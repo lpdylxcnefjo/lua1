@@ -8,11 +8,38 @@ local logo = gradient.text_animate("M E T A S O O N", -2, {
     color(0, 0, 0)
 })
 
-local stats = {kills = 0, misses = 0, start = globals.realtime}
+local FOLDER = ".\\metasoon"
+local DB_FILE = FOLDER .. "\\db.dat"
+local stats = {kills = 0, misses = 0}
+local session_start = globals.realtime
 
 local function fmt_time(sec)
     sec = math.floor(sec)
     return string.format("%dh %dm %ds", math.floor(sec / 3600), math.floor(sec % 3600 / 60), sec % 60)
+end
+
+local function read_db()
+    local raw = files.read(DB_FILE)
+    if not raw then return {total = 0, configs = {}} end
+    local ok, data = pcall(json.parse, raw)
+    if not ok or type(data) ~= "table" then return {total = 0, configs = {}} end
+    data.configs = data.configs or {}
+    data.total = data.total or 0
+    return data
+end
+
+local function write_db(data)
+    files.create_folder(FOLDER)
+    files.write(DB_FILE, json.stringify(data))
+end
+
+local store = read_db()
+
+local function config_names()
+    local t = {}
+    for name in pairs(store.configs) do t[#t + 1] = name end
+    table.sort(t)
+    return t
 end
 
 -- Main
@@ -20,12 +47,13 @@ local main_nav = pui.create("Main", "Pages", 1)
 local main_list = main_nav:list("Select", {"Home", "Config"})
 local main_box = pui.create("Main", "Settings", 2)
 
--- Home (statistics)
+-- Home
 local lbl_user = main_box:label("Username")
+local lbl_total = main_box:label("Total")
 local lbl_session = main_box:label("Session")
 local lbl_kills = main_box:label("Kills")
 local lbl_misses = main_box:label("Misses")
-local home = {lbl_user, lbl_session, lbl_kills, lbl_misses}
+local home = {lbl_user, lbl_total, lbl_session, lbl_kills, lbl_misses}
 
 -- Config
 local cfg_name = main_box:input("Config Name", "Type Here")
@@ -39,45 +67,30 @@ local config = {cfg_name, cfg_list, cfg_save, cfg_load, cfg_delete, cfg_export, 
 
 local main_pages = {home, config}
 
--- Config logic
-local DB_KEY = "metasoon_configs"
-
-local function config_names()
-    local names = {}
-    for name in pairs(db[DB_KEY] or {}) do
-        names[#names + 1] = name
-    end
-    table.sort(names)
-    return names
-end
-
 local function refresh_list()
-    local names = config_names()
-    if #names == 0 then names = {"empty"} end
-    cfg_list:update(names)
+    local n = config_names()
+    if #n == 0 then n = {"empty"} end
+    cfg_list:update(n)
 end
 
 cfg_save:set_callback(function()
     local name = cfg_name:get()
     if not name or name == "" then return end
-    local cfgs = db[DB_KEY] or {}
-    cfgs[name] = pui.save()
-    db[DB_KEY] = cfgs
+    store.configs[name] = pui.save()
+    write_db(store)
     refresh_list()
 end)
 
 cfg_load:set_callback(function()
-    local cfgs = db[DB_KEY] or {}
     local name = config_names()[cfg_list:get()]
-    if name and cfgs[name] then pui.load(cfgs[name]) end
+    if name and store.configs[name] then pui.load(store.configs[name]) end
 end)
 
 cfg_delete:set_callback(function()
-    local cfgs = db[DB_KEY] or {}
     local name = config_names()[cfg_list:get()]
-    if name and cfgs[name] then
-        cfgs[name] = nil
-        db[DB_KEY] = cfgs
+    if name and store.configs[name] then
+        store.configs[name] = nil
+        write_db(store)
         refresh_list()
     end
 end)
@@ -87,8 +100,10 @@ cfg_export:set_callback(function()
 end)
 
 cfg_import:set_callback(function()
-    local data = clipboard.get()
-    if data and data ~= "" then pui.load(json.parse(data)) end
+    local raw = clipboard.get()
+    if not raw or raw == "" then return end
+    local ok, data = pcall(json.parse, raw)
+    if ok then pui.load(data) end
 end)
 
 refresh_list()
@@ -138,13 +153,20 @@ events.aim_ack:set(function(e)
     if e.state then stats.misses = stats.misses + 1 end
 end)
 
+events.shutdown:set(function()
+    store.total = store.total + (globals.realtime - session_start)
+    write_db(store)
+end)
+
 events.render:set(function()
     logo:animate()
     pui.sidebar(logo:get_animated_text(), "fire-flame-curved")
 
     if ui.get_alpha() > 0 then
+        local session = globals.realtime - session_start
         lbl_user:name("Username: " .. common.get_username())
-        lbl_session:name("Session: " .. fmt_time(globals.realtime - stats.start))
+        lbl_total:name("Total: " .. fmt_time(store.total + session))
+        lbl_session:name("Session: " .. fmt_time(session))
         lbl_kills:name("Kills: " .. stats.kills)
         lbl_misses:name("Misses: " .. stats.misses)
         show_pages(main_pages, main_list:get())
