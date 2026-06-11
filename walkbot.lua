@@ -45,7 +45,7 @@ local bot = {}; do
     M.auto_learn      = wg:switch("Auto-explore (self walk)", false)
     M.explore_speed   = wg:slider("Explore speed", 50, 450, 250, 1)
     M.use_map         = wg:switch("Use learned map", true)
-    M.node_spacing    = wg:slider("Node spacing", 40, 300, 110, 1, "Min distance between learned nodes")
+    M.node_spacing    = wg:slider("Node spacing", 40, 400, 90, 1, "Min distance between learned nodes (smaller = denser map)")
     M.clear_map       = wg:button("Clear learned map")
 
     M.combat_enable   = wg:switch("Auto combat", true)
@@ -251,20 +251,46 @@ local bot = {}; do
         return nil
     end
 
-    -- build a world-point path through the learned map toward enemy_pos
+    -- build a world-point path through the learned map toward enemy_pos.
+    -- densifies sparse node hops into smaller waypoints so following is smooth,
+    -- and bails if the graph can't actually get us near the enemy.
     local function map_route(lp, enemy_pos)
         if #S.map_nodes < 2 then return nil end
         local o = lp:get_origin()
-        local start_i = nearest_node({ x = o.x, y = o.y, z = o.z }, 400)
-        local goal_i = nearest_node(enemy_pos, 600)
+        local start_i = nearest_node({ x = o.x, y = o.y, z = o.z }, 500)
+        local goal_i = nearest_node(enemy_pos, 800)
         if not start_i or not goal_i then return nil end
         local node_path = astar(start_i, goal_i)
         if not node_path or #node_path < 1 then return nil end
-        local pts = {}
-        for _, idx in ipairs(node_path) do
-            local n = S.map_nodes[idx]
-            pts[#pts + 1] = vector(n.x, n.y, n.z + M.trace_height:get())
+
+        -- if the goal node is still far from the actual enemy, the learned map
+        -- doesn't cover that area -> let caller fall back to live ray-probing
+        local gn = S.map_nodes[goal_i]
+        local gdx, gdy = gn.x - enemy_pos.x, gn.y - enemy_pos.y
+        if math.sqrt(gdx * gdx + gdy * gdy) > 600 then return nil end
+
+        local h = M.trace_height:get()
+        local pts = { vector(o.x, o.y, o.z + h) }
+        for k = 1, #node_path do
+            local n = S.map_nodes[node_path[k]]
+            local target = vector(n.x, n.y, n.z + h)
+            -- densify: insert midpoints if the hop between nodes is long
+            local prev = pts[#pts]
+            local seg = prev:dist(target)
+            if seg > 130 then
+                local steps = math.floor(seg / 100)
+                for s = 1, steps - 1 do
+                    local t = s / steps
+                    pts[#pts + 1] = vector(
+                        prev.x + (target.x - prev.x) * t,
+                        prev.y + (target.y - prev.y) * t,
+                        prev.z + (target.z - prev.z) * t)
+                end
+            end
+            pts[#pts + 1] = target
         end
+        -- finally aim at the real enemy spot
+        pts[#pts + 1] = vector(enemy_pos.x, enemy_pos.y, enemy_pos.z)
         return pts
     end
 
@@ -672,18 +698,34 @@ local bot = {}; do
                     if open_dist_dir(lp, origin, S.explore_dir, 80) < 30 then need_new = true end
                 end
                 if need_new then
-                    -- prefer the most open corridor, with some randomness so it
-                    -- doesn't loop the same route forever
-                    local best_dir, best_open = find_open_corridor(lp)
-                    if math.random() < 0.35 then
-                        -- occasionally pick a random open-ish direction to vary coverage
-                        for _ = 1, 6 do
-                            local rd = rotate_dir(vector(1, 0, 0), math.random(0, 359))
-                            if open_dist_dir(lp, origin, rd, 200) > 120 then best_dir = rd; break end
+                    -- FRONTIER EXPLORATION: don't just pick the most open corridor
+                    -- (that makes the bot loop the same rooms). Scan 16 directions,
+                    -- and prefer the one that is BOTH open AND leads toward an area
+                    -- with the FEWEST already-recorded nodes = unexplored territory.
+                    local best_dir, best_score = nil, -math.huge
+                    for i = 0, 15 do
+                        local ang = (i / 16) * 360
+                        local rd = rotate_dir(vector(1, 0, 0), ang)
+                        local od = open_dist_dir(lp, origin, rd, 400)
+                        if od > 80 then
+                            -- look-ahead point along this ray
+                            local probe = math.min(od - 10, 350)
+                            local px = origin.x + rd.x * probe
+                            local py = origin.y + rd.y * probe
+                            -- count nodes near that point (fewer = more unexplored)
+                            local near = 0
+                            for n = 1, #S.map_nodes do
+                                local nd = S.map_nodes[n]
+                                local ddx, ddy = nd.x - px, nd.y - py
+                                if (ddx * ddx + ddy * ddy) < (200 * 200) then near = near + 1 end
+                            end
+                            -- score: open space good, crowded areas bad, slight random
+                            local score = (od / 400) * 1.0 - near * 0.6 + math.random() * 0.4
+                            if score > best_score then best_score = score; best_dir = rd end
                         end
                     end
-                    S.explore_dir = best_dir or rotate_dir(vector(1, 0, 0), math.random(0, 359))
-                    S.explore_until = globals.tickcount + math.random(48, 128)
+                    S.explore_dir = best_dir or find_open_corridor(lp) or rotate_dir(vector(1, 0, 0), math.random(0, 359))
+                    S.explore_until = globals.tickcount + math.random(64, 160)
                     S.stuck_counter = 0
                 end
 
