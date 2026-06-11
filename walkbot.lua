@@ -42,6 +42,8 @@ local bot = {}; do
 
     -- ============ MAP LEARNING ============
     M.learn_map       = wg:switch("Learn map (walk around)", false)
+    M.auto_learn      = wg:switch("Auto-explore (self walk)", false)
+    M.explore_speed   = wg:slider("Explore speed", 50, 450, 250, 1)
     M.use_map         = wg:switch("Use learned map", true)
     M.node_spacing    = wg:slider("Node spacing", 40, 300, 110, 1, "Min distance between learned nodes")
     M.clear_map       = wg:button("Clear learned map")
@@ -105,6 +107,9 @@ local bot = {}; do
         map_dirty = false,    -- needs saving
         last_save_tick = 0,
         map_loaded = false,
+        -- auto-explore
+        explore_dir = nil,
+        explore_until = 0,
     }
 
     M.clear_btn:set_callback(function()
@@ -184,7 +189,10 @@ local bot = {}; do
         local ni = nearest_node(pos, spacing)
         if ni == nil then
             -- create a new node, tag ladder/crouch state
-            local on_ladder = lp.m_MoveType == MOVETYPE_LADDER
+            local on_ladder = false
+            local ok, st = pcall(function() return lp:get_anim_state() end)
+            if ok and st and st.on_ladder then on_ladder = true
+            elseif lp.m_MoveType == MOVETYPE_LADDER then on_ladder = true end
             local ducking = lp.m_fFlags and bit.band(lp.m_fFlags, 2) ~= 0  -- FL_DUCKING
             S.map_nodes[#S.map_nodes + 1] = {
                 x = o.x, y = o.y, z = o.z,
@@ -548,8 +556,16 @@ local bot = {}; do
         return tr > 0.95 and tr2 > 0.95
     end
 
+    -- robust ladder detection via anim_state.on_ladder (most reliable),
+    -- falling back to movetype + a forward surface-name trace.
+    local function is_on_ladder(lp)
+        local ok, st = pcall(function() return lp:get_anim_state() end)
+        if ok and st and st.on_ladder then return true end
+        return lp.m_MoveType == MOVETYPE_LADDER
+    end
+
     local function check_ladder(lp)
-        if lp.m_MoveType == MOVETYPE_LADDER then return true, "on_ladder" end
+        if is_on_ladder(lp) then return true, "on_ladder" end
         local feet = lp:get_origin()
         local fwd = vector():angles(0, lp:get_angles().y)
         local tr = utils.trace_line(
@@ -631,6 +647,76 @@ local bot = {}; do
             if S.map_dirty and (globals.tickcount - S.last_save_tick) > 256 then
                 save_map()
                 S.last_save_tick = globals.tickcount
+            end
+
+            -- AUTO-EXPLORE: the bot drives itself around to map the level.
+            -- Picks an open corridor, commits to it, bounces to a new one when
+            -- it runs into a wall / gets stuck, jumps obstacles, climbs ladders.
+            if M.auto_learn:get() then
+                local feet = lp:get_origin()
+                local origin = vector(feet.x, feet.y, feet.z + M.trace_height:get())
+                local on_ground = lp.m_fFlags and bit.band(lp.m_fFlags, FL_ONGROUND) == 1
+
+                -- stuck tracking
+                local vel = lp.m_vecVelocity
+                local spd = math.sqrt(vel.x * vel.x + vel.y * vel.y)
+                if on_ground and spd < M.stuck_speed:get() then
+                    S.stuck_counter = S.stuck_counter + 1
+                else
+                    S.stuck_counter = math.max(0, S.stuck_counter - 1)
+                end
+
+                -- (re)pick an explore direction when expired, stuck, or blocked
+                local need_new = (S.explore_dir == nil) or (globals.tickcount > S.explore_until) or (S.stuck_counter > 8)
+                if not need_new then
+                    if open_dist_dir(lp, origin, S.explore_dir, 80) < 30 then need_new = true end
+                end
+                if need_new then
+                    -- prefer the most open corridor, with some randomness so it
+                    -- doesn't loop the same route forever
+                    local best_dir, best_open = find_open_corridor(lp)
+                    if math.random() < 0.35 then
+                        -- occasionally pick a random open-ish direction to vary coverage
+                        for _ = 1, 6 do
+                            local rd = rotate_dir(vector(1, 0, 0), math.random(0, 359))
+                            if open_dist_dir(lp, origin, rd, 200) > 120 then best_dir = rd; break end
+                        end
+                    end
+                    S.explore_dir = best_dir or rotate_dir(vector(1, 0, 0), math.random(0, 359))
+                    S.explore_until = globals.tickcount + math.random(48, 128)
+                    S.stuck_counter = 0
+                end
+
+                -- ladder: climb it (great for mapping vertical routes)
+                local on_ladder = check_ladder(lp)
+                if on_ladder and M.use_ladders:get() then
+                    fix_movement(cmd, vector():angles(0, lp:get_angles().y), M.explore_speed:get())
+                    cmd.view_angles.x = -45
+                    cmd.upmove = M.explore_speed:get()
+                    cmd.in_jump = false
+                    return
+                end
+
+                -- vertical: jump obstacles, crouch under low gaps
+                local nj, nc = scan_vertical(lp, S.explore_dir)
+                local headroom = (not M.ceiling_check:get()) or has_headroom(lp)
+                if not headroom then nj = false; nc = true end
+
+                fix_movement(cmd, S.explore_dir, M.explore_speed:get())
+
+                local jumped = false
+                if nj and M.jump_obstacles:get() and on_ground and headroom then
+                    cmd.in_jump = true; jumped = true
+                elseif S.stuck_counter > 6 and on_ground and headroom then
+                    cmd.in_jump = true; jumped = true
+                elseif M.auto_bhop:get() and on_ground and not nc and headroom then
+                    cmd.in_jump = true; jumped = true
+                end
+                if nc and M.crouch_gaps:get() and not jumped then
+                    cmd.in_duck = true
+                    cmd.in_jump = false
+                end
+                return  -- auto-explore fully controls movement this tick
             end
         end
 
@@ -947,7 +1033,8 @@ local bot = {}; do
         local x, y = screen.x * 0.5, screen.y * 0.72
         local status, clr
         if M.learn_map:get() then
-            status = string.format("LEARNING MAP... (%d nodes)", #S.map_nodes); clr = color(255, 200, 40, 230)
+            local mode = M.auto_learn:get() and "AUTO-EXPLORING" or "LEARNING MAP"
+            status = string.format("%s... (%d nodes)", mode, #S.map_nodes); clr = color(255, 200, 40, 230)
         elseif S.is_recording then
             status = string.format("RECORDING... (%d)", #S.recorded); clr = color(255, 60, 60, 230)
         elseif S.is_replaying then
