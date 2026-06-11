@@ -183,6 +183,7 @@ local bot = {}; do
 
     -- record where the player is walking into the graph
     local function learn_step(lp)
+        if #S.map_nodes >= 5000 then return end  -- hard cap on learned nodes
         local o = lp:get_origin()
         local pos = { x = o.x, y = o.y, z = o.z }
         local spacing = M.node_spacing:get()
@@ -310,10 +311,13 @@ local bot = {}; do
     -- network state reliability (per Neverlose API get_network_state):
     -- 0 = not dormant (visible), 1 = dormant but 100% known pos,
     -- 2 = shared esp, 3 = sounds, 4 = not updated, 5 = unavailable/too old
+    -- We accept everything except totally unavailable (5), so the bot still
+    -- walks toward the last-known position of a dormant enemy.
     local function pos_reliable(e)
         if not e.get_network_state then return true end
         local st = e:get_network_state()
-        return st ~= nil and st <= 3   -- accept visible + dormant-with-known-pos
+        if st == nil then return true end
+        return st <= 4   -- accept visible + all dormant except unavailable/too-old
     end
 
     -- returns nearest enemy (including DORMANT ones), its distance, and whether
@@ -1037,6 +1041,28 @@ local bot = {}; do
         local need_jump, need_crouch = S.cached_need_jump, S.cached_need_crouch
         local headroom = S.cached_headroom
         if not headroom then need_jump = false; need_crouch = true end
+
+        -- WALL-SLIDE SAFETY: if the chosen direction rams a wall within ~30u,
+        -- deflect along it (try angled left/right) instead of bumping the wall.
+        -- this stops the "ramming into floor/wall/ceiling" behaviour where the
+        -- bot ignores a surface it should walk around.
+        do
+            local probe = 34
+            if open_dist_dir(lp, self_pos, final_dir, probe) < probe * 0.9 then
+                local found = nil
+                for _, deg in ipairs({ 25, -25, 45, -45, 70, -70, 90, -90 }) do
+                    local cand = rotate_dir(final_dir, deg)
+                    if open_dist_dir(lp, self_pos, cand, probe) >= probe * 0.9 then
+                        found = cand
+                        break
+                    end
+                end
+                if found then
+                    final_dir = found
+                    S.persisted_dir = found
+                end
+            end
+        end
 
         fix_movement(cmd, final_dir, M.move_speed:get())
 
