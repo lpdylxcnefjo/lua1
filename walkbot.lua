@@ -9,7 +9,7 @@ local bot = {}; do
     local look_at_enemy = walk_group:switch("Look at enemy", false)
 
     -- ============ NAVIGATION ============
-    local nav_rays = walk_group:slider("Path scan rays", 8, 128, 48, 1)
+    local nav_rays = walk_group:slider("Path scan rays", 8, 128, 24, 1)
     local scan_distance = walk_group:slider("Scan distance", 100, 8192, 2400, 1)
     local probe_distance = walk_group:slider("Probe step", 80, 600, 280, 1, "Length of each probe step")
     local enemy_bias = walk_group:slider("Enemy bias", 0, 100, 70, 1, "How strongly to head toward the enemy vs open space")
@@ -77,6 +77,10 @@ local bot = {}; do
     local last_rec_key, last_play_key = false, false
     local predicted_path = {}
     local last_predict_tick = 0
+    local cached_desired = nil
+    local last_choose_tick = 0
+    local cached_need_jump, cached_need_crouch, cached_headroom = false, false, true
+    local last_vert_tick = 0
     local persisted_dir = nil
     local stuck_counter = 0
     local escape_dir = nil
@@ -697,43 +701,54 @@ local bot = {}; do
         else
             escape_dir = nil
 
-            -- use probe_path 2-step lookahead to pick the best direction
-            local desired = choose_direction(lp, enemy_pos)
+            -- HEAVY: only recompute the desired direction every 6 ticks (cached).
+            -- Between recomputes we just keep steering toward the cached target,
+            -- which keeps movement smooth while massively cutting trace count.
+            if cached_desired == nil or (globals.tickcount - last_choose_tick) >= 6 then
+                local desired = choose_direction(lp, enemy_pos)
 
-            -- apply gentle wall repulsion
-            local feet = lp:get_origin()
-            local origin = vector(feet.x, feet.y, feet.z + trace_height:get())
-            local wpx, wpy = compute_wall_push(lp, origin)
-            local nx = desired.x + wpx
-            local ny = desired.y + wpy
-            local nl = math.sqrt(nx * nx + ny * ny)
-            if nl > 0.001 then
-                desired = vector(nx / nl, ny / nl, 0)
+                -- apply gentle wall repulsion (also part of the heavy recompute)
+                local feet = lp:get_origin()
+                local origin = vector(feet.x, feet.y, feet.z + trace_height:get())
+                local wpx, wpy = compute_wall_push(lp, origin)
+                local nx = desired.x + wpx
+                local ny = desired.y + wpy
+                local nl = math.sqrt(nx * nx + ny * ny)
+                if nl > 0.001 then
+                    desired = vector(nx / nl, ny / nl, 0)
+                end
+
+                cached_desired = desired
+                last_choose_tick = globals.tickcount
             end
 
-            -- strong continuity: smoothly rotate toward the desired dir
-            -- (limited turn speed prevents jitter between ticks)
+            -- strong continuity: smoothly rotate toward the cached dir each tick
             if not persisted_dir then
-                persisted_dir = desired
+                persisted_dir = cached_desired
             else
-                persisted_dir = rotate_towards(persisted_dir, desired, turn_speed:get())
+                persisted_dir = rotate_towards(persisted_dir, cached_desired, turn_speed:get())
             end
             final_dir = persisted_dir
         end
 
         -- build predicted route for blue path visualizer (throttled: heavy on traces)
         if draw_nav:get() then
-            if globals.tickcount - last_predict_tick >= 8 then
-                predicted_path = predict_route(lp, enemy_pos, final_dir, 40)
+            if globals.tickcount - last_predict_tick >= 12 then
+                predicted_path = predict_route(lp, enemy_pos, final_dir, 30)
                 last_predict_tick = globals.tickcount
             end
         else
             predicted_path = {}
         end
 
-        -- ===== VERTICAL (jump vs crouch) =====
-        local need_jump, need_crouch = scan_vertical(lp, final_dir)
-        local headroom = (not ceiling_check:get()) or has_headroom(lp)
+        -- ===== VERTICAL (jump vs crouch) - cached every 3 ticks =====
+        if (globals.tickcount - last_vert_tick) >= 3 then
+            cached_need_jump, cached_need_crouch = scan_vertical(lp, final_dir)
+            cached_headroom = (not ceiling_check:get()) or has_headroom(lp)
+            last_vert_tick = globals.tickcount
+        end
+        local need_jump, need_crouch = cached_need_jump, cached_need_crouch
+        local headroom = cached_headroom
         if not headroom then
             need_jump = false
             need_crouch = true
