@@ -267,6 +267,18 @@ local bot = {}; do
             end
 
             local nxt = vector(cur.x + sim_dir.x * travel, cur.y + sim_dir.y * travel, cur.z)
+
+            -- VERTICAL FOLLOW: trace down from a bit above to snap to the ground,
+            -- so the line falls into drops and climbs stairs like a hose.
+            -- start the down-trace from +40 so we can also climb small ledges.
+            local top = vector(nxt.x, nxt.y, nxt.z + 40)
+            local bottom = vector(nxt.x, nxt.y, nxt.z - 200)
+            local df = trace_world(top, bottom, lp)
+            local ground_z = top.z - df * 240
+            -- only accept if we actually hit something within range
+            if df < 1 then
+                nxt = vector(nxt.x, nxt.y, ground_z + M.trace_height:get())
+            end
             pts[#pts + 1] = nxt
 
             local dxe = enemy_pos.x - nxt.x
@@ -479,10 +491,25 @@ local bot = {}; do
 
         local on_ground = lp.m_fFlags and bit.band(lp.m_fFlags, FL_ONGROUND) == 1
 
-        -- DT / air lag (no shooting)
+        -- compute enemy visibility ONCE (used by airlag + combat)
+        local eye = lp:get_eye_position()
+        local head = enemy:get_hitbox_position(1)
+        local enemy_visible = false
+        if eye and head then
+            -- world-only trace: if it reaches the head, enemy is in the open
+            enemy_visible = trace_world(eye, head, lp) > 0.99
+        end
+
+        -- DT / air lag: only when enemy is VISIBLE (in sight). Off otherwise / after kill.
         if M.combat_enable:get() then
             if M.auto_airlag:get() then
-                do_airlag(cmd, lp)
+                if enemy_visible then
+                    do_airlag(cmd, lp)
+                elseif M.is_dt then
+                    -- not in sight -> reset DT override (turned "off")
+                    M.is_dt:override()
+                    S.airlag_state = true
+                end
             elseif M.auto_dt:get() and M.is_dt then
                 M.is_dt:override(true)
             end
@@ -490,15 +517,10 @@ local bot = {}; do
             reset_overrides()
         end
 
-        -- combat: stop+crouch only if we SEE and can hit the enemy (no auto fire)
-        if M.combat_enable:get() then
-            local eye = lp:get_eye_position()
-            local head = enemy:get_hitbox_position(1)
-            local visible = false
-            if eye and head then
-                visible = trace_world(eye, head, lp) > 0.95
-            end
-            if visible and can_hit(lp, enemy) then
+        -- combat: stop+crouch only if we SEE and can REALLY hit the enemy (no auto fire)
+        -- stricter: needs visibility + actual hittable damage; avoids false fires.
+        if M.combat_enable:get() and enemy_visible then
+            if can_hit(lp, enemy) then
                 cmd.forwardmove = 0
                 cmd.sidemove = 0
                 cmd.in_jump = false
