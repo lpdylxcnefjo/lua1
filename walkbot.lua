@@ -56,6 +56,20 @@ local bot = {}; do
 
     M.draw_nav        = wg:switch("Draw navigation", true)
 
+    -- ============ POSITION TRIGGERS ============
+    -- Запиши зону врага + свою позицию + действие. Когда враг попадает в зону,
+    -- бот идёт на твою позицию и делает выбранное действие. Можно много записей.
+    M.trig_enable     = wg:switch("Position triggers", false)
+    M.trig_zone       = wg:slider("Trigger zone radius", 50, 1500, 400, 1, "Радиус зоны врага для срабатывания")
+    M.trig_action     = wg:combo("Trigger action", "Hold position", "Peek (AI peek)", "Play recording")
+    M.trig_peek_dist  = wg:slider("Peek distance", 20, 200, 70, 1, "Насколько выдвигаться на пик")
+    M.trig_save_key   = wg:hotkey("Save trigger here", 0x4B)
+    M.trig_clear      = wg:button("Clear all triggers")
+    M.trig_draw       = wg:switch("Draw triggers", true)
+    M.trig_action:set_callback(function(self)
+        M.trig_peek_dist:visibility(self:get() == "Peek (AI peek)")
+    end, true)
+
     M.record_key      = group:hotkey("Record (hold)", 0x52)
     M.play_trigger    = group:combo("Replay trigger", "Enemy near", "Hotkey", "Auto on approach")
     M.play_key        = group:hotkey("Replay key", 0x54)
@@ -110,6 +124,14 @@ local bot = {}; do
         -- auto-explore
         explore_dir = nil,
         explore_until = 0,
+        -- position triggers
+        triggers = {},
+        triggers_loaded = false,
+        active_trigger = nil,
+        last_trig_save_key = false,
+        trig_replay_idx = 1,
+        peek_state = "out",
+        peek_until = 0,
     }
 
     M.clear_btn:set_callback(function()
@@ -159,6 +181,63 @@ local bot = {}; do
         local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
         return math.sqrt(dx * dx + dy * dy + dz * dz)
     end
+
+    local function node_dist2d(a, b)
+        local dx, dy = a.x - b.x, a.y - b.y
+        return math.sqrt(dx * dx + dy * dy)
+    end
+
+    -- ============ POSITION TRIGGERS (per-map, saved to db) ============
+    local function trig_key()
+        local md = common and common.get_map_data and common.get_map_data()
+        local name = (md and (md.shortname or md.name)) or "unknown"
+        return "walkbot_trig_" .. tostring(name)
+    end
+
+    local function load_triggers()
+        local raw = db[trig_key()]
+        if type(raw) == "string" and #raw > 2 then
+            local ok, data = pcall(json.parse, raw)
+            if ok and type(data) == "table" then
+                S.triggers = data
+                S.triggers_loaded = true
+                return
+            end
+        end
+        S.triggers = {}
+        S.triggers_loaded = true
+    end
+
+    local function save_triggers()
+        local ok, raw = pcall(json.stringify, S.triggers)
+        if ok then db[trig_key()] = raw end
+    end
+
+    -- сохранить новый триггер: зона врага = позиция ближайшего врага,
+    -- моя позиция = где я стою, действие = выбранное в combo.
+    local function save_trigger_here(lp, enemy)
+        local o = lp:get_origin()
+        local e = enemy and enemy:get_origin() or o
+        local t = {
+            enemy = { x = e.x, y = e.y, z = e.z },
+            pos   = { x = o.x, y = o.y, z = o.z },
+            yaw   = lp:get_angles().y,
+            action = M.trig_action:get(),
+            peek  = M.trig_peek_dist:get(),
+        }
+        if #S.recorded > 0 then
+            t.rec = {}
+            for i = 1, #S.recorded do t.rec[i] = S.recorded[i] end
+        end
+        S.triggers[#S.triggers + 1] = t
+        save_triggers()
+    end
+
+    M.trig_clear:set_callback(function()
+        S.triggers = {}
+        S.active_trigger = nil
+        save_triggers()
+    end)
 
     -- find nearest node within max_dist, returns index or nil
     local function nearest_node(pos, max_dist)
@@ -667,6 +746,17 @@ local bot = {}; do
 
         -- load the learned map once for the current map
         if not S.map_loaded then load_map() end
+        if not S.triggers_loaded then load_triggers() end
+
+        -- сохранить триггер по хоткею (фронт нажатия)
+        do
+            local sk = M.trig_save_key:get() or false
+            if sk and not S.last_trig_save_key then
+                local te = get_closest_enemy(lp)
+                save_trigger_here(lp, te)
+            end
+            S.last_trig_save_key = sk
+        end
 
         -- map learning: while enabled, record the player's path into the graph.
         -- throttled so we don't index the DB every tick.
@@ -812,6 +902,94 @@ local bot = {}; do
             apply_frame(cmd, frame, yaw_offset)
             S.replay_index = S.replay_index + 1
             return
+        end
+
+        -- ============ POSITION TRIGGERS ============
+        -- Если враг попал в записанную зону - идём на сохранённую позицию и
+        -- выполняем действие (стоять / AI-пик / проиграть запись).
+        if M.trig_enable:get() and enemy and #S.triggers > 0 then
+            local teo = enemy:get_origin()
+            local best, best_d = nil, math.huge
+            for i = 1, #S.triggers do
+                local t = S.triggers[i]
+                local dz = node_dist2d(t.enemy, teo)
+                if dz <= M.trig_zone:get() and dz < best_d then
+                    best_d = dz; best = i
+                end
+            end
+
+            if best then
+                S.active_trigger = best
+                local t = S.triggers[best]
+                local tmo = lp:get_origin()
+                local d_to_pos = node_dist2d(t.pos, tmo)
+
+                if d_to_pos > 45 then
+                    -- ещё не на позиции -> идём на неё, огибая стены
+                    local dir = vector(t.pos.x - tmo.x, t.pos.y - tmo.y, 0)
+                    local dl = math.sqrt(dir.x * dir.x + dir.y * dir.y)
+                    if dl > 0.001 then dir = vector(dir.x / dl, dir.y / dl, 0) end
+                    local wpx, wpy = compute_wall_push(lp, vector(tmo.x, tmo.y, tmo.z + M.trace_height:get()))
+                    local nx, ny = dir.x + wpx, dir.y + wpy
+                    local nl = math.sqrt(nx * nx + ny * ny)
+                    if nl > 0.001 then dir = vector(nx / nl, ny / nl, 0) end
+                    fix_movement(cmd, dir, M.move_speed:get())
+                    local og = lp.m_fFlags and bit.band(lp.m_fFlags, FL_ONGROUND) == 1
+                    if M.auto_bhop:get() and og then cmd.in_jump = true end
+                    return
+                else
+                    -- НА ПОЗИЦИИ -> выполняем действие
+                    cmd.forwardmove = 0
+                    cmd.sidemove = 0
+                    local eye = lp:get_eye_position()
+                    local head = enemy:get_hitbox_position(1) or teo
+                    if eye and head then
+                        local dx, dy, dz = head.x - eye.x, head.y - eye.y, head.z - eye.z
+                        local d2d = math.sqrt(dx * dx + dy * dy)
+                        cmd.view_angles.x = math.deg(-math.atan2(dz, d2d))
+                        cmd.view_angles.y = math.deg(math.atan2(dy, dx))
+                    end
+
+                    if t.action == "Play recording" and t.rec and #t.rec > 0 then
+                        local fr = t.rec[S.trig_replay_idx]
+                        if not fr then S.trig_replay_idx = 1; fr = t.rec[1] end
+                        local yoff = math.deg(math.atan2(teo.y - tmo.y, teo.x - tmo.x)) - (t.rec[1].yaw or 0)
+                        apply_frame(cmd, fr, yoff)
+                        S.trig_replay_idx = S.trig_replay_idx + 1
+                        return
+                    elseif t.action == "Peek (AI peek)" then
+                        -- AI-ПИК: выдвигаемся к врагу, держим, отходим назад. Цикл.
+                        local pdir = vector(teo.x - tmo.x, teo.y - tmo.y, 0)
+                        local pl = math.sqrt(pdir.x * pdir.x + pdir.y * pdir.y)
+                        if pl > 0.001 then pdir = vector(pdir.x / pl, pdir.y / pl, 0) end
+                        if globals.tickcount > S.peek_until then
+                            if S.peek_state == "out" then
+                                S.peek_state = "peek"; S.peek_until = globals.tickcount + 24
+                            else
+                                S.peek_state = "out"; S.peek_until = globals.tickcount + 40
+                            end
+                        end
+                        if S.peek_state == "peek" then
+                            fix_movement(cmd, pdir, M.move_speed:get())
+                        else
+                            local back = vector(t.pos.x - tmo.x, t.pos.y - tmo.y, 0)
+                            local bl = math.sqrt(back.x * back.x + back.y * back.y)
+                            if bl > 6 then
+                                back = vector(back.x / bl, back.y / bl, 0)
+                                fix_movement(cmd, back, M.move_speed:get())
+                            end
+                        end
+                        return
+                    else
+                        -- Hold position: стоим и смотрим на врага
+                        return
+                    end
+                end
+            else
+                S.active_trigger = nil
+            end
+        else
+            S.active_trigger = nil
         end
 
         if not (M.walk_to_enemy:get() and enemy) then
@@ -1083,6 +1261,27 @@ local bot = {}; do
 
     -- ============ HUD + NAV DRAW ============
     events.render:set(function()
+        -- отрисовка триггеров: зона врага (красная) + позиция (зелёная)
+        if M.trig_draw:get() and M.trig_enable:get() then
+            for i = 1, #S.triggers do
+                local t = S.triggers[i]
+                local ez = vector(t.enemy.x, t.enemy.y, t.enemy.z):to_screen()
+                local pz = vector(t.pos.x, t.pos.y, t.pos.z):to_screen()
+                local active = (S.active_trigger == i)
+                if pz then
+                    local c = active and color(40, 255, 120, 255) or color(40, 200, 100, 160)
+                    render.text(2, pz, c, "c", "POS" .. i)
+                end
+                if ez then
+                    local c = active and color(255, 120, 40, 255) or color(255, 80, 40, 160)
+                    render.text(2, ez, c, "c", "ZONE" .. i)
+                end
+                if ez and pz then
+                    render.line(ez, pz, color(255, 255, 255, active and 120 or 50))
+                end
+            end
+        end
+
         if M.draw_nav:get() and M.walk_to_enemy:get() then
             local pp = S.predicted_path
             if #pp > 1 then
@@ -1107,6 +1306,10 @@ local bot = {}; do
             status = string.format("RECORDING... (%d)", #S.recorded); clr = color(255, 60, 60, 230)
         elseif S.is_replaying then
             status = string.format("REPLAYING %d/%d", S.replay_index, #S.recorded); clr = color(60, 150, 255, 230)
+        elseif S.active_trigger ~= nil then
+            local t = S.triggers[S.active_trigger]
+            local act = t and t.action or "?"
+            status = string.format("TRIGGER #%d: %s", S.active_trigger, act); clr = color(255, 160, 40, 240)
         elseif M.walk_to_enemy:get() then
             local extra = (S.escape_dir ~= nil) and " [ESCAPING WALL]" or ""
             if S.tracking_dormant then extra = extra .. " [DORMANT]" end
@@ -1124,6 +1327,7 @@ local bot = {}; do
         S.stuck_counter = 0
         S.escape_dir = nil
         save_map()   -- persist learned map before unload
+        save_triggers()
         reset_overrides()
     end)
 end
