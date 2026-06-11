@@ -56,31 +56,34 @@ local bot = {}; do
 
     M.draw_nav        = wg:switch("Draw navigation", true)
 
-    -- ============ POSITION TRIGGERS ============
-    -- Запиши зону врага + свою позицию + действие. Когда враг попадает в зону,
-    -- бот идёт на твою позицию и делает выбранное действие. Можно много записей.
-    M.trig_enable     = wg:switch("Position triggers", false)
-    M.trig_zone       = wg:slider("Trigger zone radius", 50, 1500, 400, 1, "Радиус зоны врага для срабатывания")
-    M.trig_action     = wg:combo("Trigger action", "Hold position", "Peek (AI peek)", "Play recording")
-    M.trig_peek_dist  = wg:slider("Peek distance", 20, 200, 70, 1, "Насколько выдвигаться на пик")
-    M.trig_save_key   = wg:hotkey("Save trigger here", 0x4B)
-    M.trig_clear      = wg:button("Clear all triggers")
-    M.trig_draw       = wg:switch("Draw triggers", true)
-    M.trig_action:set_callback(function(self)
-        M.trig_peek_dist:visibility(self:get() == "Peek (AI peek)")
-    end, true)
-
-    M.record_key      = group:hotkey("Record (hold)", 0x52)
-    M.play_trigger    = group:combo("Replay trigger", "Enemy near", "Hotkey", "Auto on approach")
-    M.play_key        = group:hotkey("Replay key", 0x54)
-    M.trigger_dist    = group:slider("Trigger distance", 50, 1500, 400, 1)
-    M.loop_replay     = group:switch("Loop replay", false)
-    M.clear_btn       = group:button("Clear recording")
-
+    -- ============ ОТДЕЛЬНАЯ ГРУППА: RECORDING (запись/реплей мувмента) ============
+    local rec_group   = ui.create("AI Bot", "Recording")
+    M.record_key      = rec_group:hotkey("Record (hold)", 0x52)
+    M.play_trigger    = rec_group:combo("Replay trigger", "Enemy near", "Hotkey", "Auto on approach")
+    M.play_key        = rec_group:hotkey("Replay key", 0x54)
+    M.trigger_dist    = rec_group:slider("Trigger distance", 50, 1500, 400, 1)
+    M.loop_replay     = rec_group:switch("Loop replay", false)
+    M.clear_btn       = rec_group:button("Clear recording")
     M.play_trigger:set_callback(function(self)
         local v = self:get()
         M.play_key:visibility(v == "Hotkey")
         M.trigger_dist:visibility(v == "Enemy near" or v == "Auto on approach")
+    end, true)
+
+    -- ============ ОТДЕЛЬНАЯ ГРУППА: TRIGGERS (позиционные триггеры) ============
+    -- Локация 1: зона врага (сетка которую ты чертишь). Локация 2: позиция бота.
+    -- Когда враг в зоне 1 - бот идёт на позицию 2 и делает действие.
+    local trig_group  = ui.create("AI Bot", "Triggers")
+    M.trig_enable     = trig_group:switch("Position triggers", false)
+    M.trig_zone       = trig_group:slider("Enemy zone radius", 50, 1500, 400, 1, "Радиус зоны врага (локация 1)")
+    M.trig_action     = trig_group:combo("Trigger action", "Hold position", "Peek (AI peek)", "Play recording")
+    M.trig_peek_dist  = trig_group:slider("Peek distance", 20, 200, 70, 1, "Насколько выдвигаться на пик")
+    M.trig_save_zone  = trig_group:hotkey("Mark enemy zone (loc 1)", 0x55)   -- U: пометить зону врага
+    M.trig_save_pos   = trig_group:hotkey("Save bot position (loc 2)", 0x4B) -- K: сохранить позицию бота
+    M.trig_clear      = trig_group:button("Clear all triggers")
+    M.trig_draw       = trig_group:switch("Draw triggers", true)
+    M.trig_action:set_callback(function(self)
+        M.trig_peek_dist:visibility(self:get() == "Peek (AI peek)")
     end, true)
 
     -- cheat references
@@ -128,7 +131,9 @@ local bot = {}; do
         triggers = {},
         triggers_loaded = false,
         active_trigger = nil,
-        last_trig_save_key = false,
+        last_save_zone_key = false,
+        last_save_pos_key = false,
+        pending_zone = nil,      -- локация 1 (зона врага), ждёт сохранения позиции (локация 2)
         trig_replay_idx = 1,
         peek_state = "out",
         peek_until = 0,
@@ -213,14 +218,26 @@ local bot = {}; do
         if ok then db[trig_key()] = raw end
     end
 
-    -- сохранить новый триггер: зона врага = позиция ближайшего врага,
-    -- моя позиция = где я стою, действие = выбранное в combo.
-    local function save_trigger_here(lp, enemy)
+    -- === ДВЕ ЛОКАЦИИ ===
+    -- Локация 1: пометить зону врага (где сейчас ближайший враг или где стоишь).
+    local function mark_enemy_zone(lp, enemy)
         local o = lp:get_origin()
         local e = enemy and enemy:get_origin() or o
+        S.pending_zone = { x = e.x, y = e.y, z = e.z }
+    end
+
+    -- Локация 2: сохранить позицию бота + действие. Связывает с pending зоной.
+    -- Если зона не помечена - используем текущую позицию врага как зону.
+    local function save_bot_position(lp, enemy)
+        local o = lp:get_origin()
+        local zone = S.pending_zone
+        if not zone then
+            local e = enemy and enemy:get_origin() or o
+            zone = { x = e.x, y = e.y, z = e.z }
+        end
         local t = {
-            enemy = { x = e.x, y = e.y, z = e.z },
-            pos   = { x = o.x, y = o.y, z = o.z },
+            enemy = zone,                                   -- локация 1
+            pos   = { x = o.x, y = o.y, z = o.z },          -- локация 2
             yaw   = lp:get_angles().y,
             action = M.trig_action:get(),
             peek  = M.trig_peek_dist:get(),
@@ -230,12 +247,14 @@ local bot = {}; do
             for i = 1, #S.recorded do t.rec[i] = S.recorded[i] end
         end
         S.triggers[#S.triggers + 1] = t
+        S.pending_zone = nil
         save_triggers()
     end
 
     M.trig_clear:set_callback(function()
         S.triggers = {}
         S.active_trigger = nil
+        S.pending_zone = nil
         save_triggers()
     end)
 
@@ -748,14 +767,21 @@ local bot = {}; do
         if not S.map_loaded then load_map() end
         if not S.triggers_loaded then load_triggers() end
 
-        -- сохранить триггер по хоткею (фронт нажатия)
+        -- сохранение триггеров по хоткеям (фронт нажатия): две локации
         do
-            local sk = M.trig_save_key:get() or false
-            if sk and not S.last_trig_save_key then
+            local zk = M.trig_save_zone:get() or false
+            if zk and not S.last_save_zone_key then
                 local te = get_closest_enemy(lp)
-                save_trigger_here(lp, te)
+                mark_enemy_zone(lp, te)
             end
-            S.last_trig_save_key = sk
+            S.last_save_zone_key = zk
+
+            local pk = M.trig_save_pos:get() or false
+            if pk and not S.last_save_pos_key then
+                local te = get_closest_enemy(lp)
+                save_bot_position(lp, te)
+            end
+            S.last_save_pos_key = pk
         end
 
         -- map learning: while enabled, record the player's path into the graph.
@@ -1263,6 +1289,13 @@ local bot = {}; do
     events.render:set(function()
         -- отрисовка триггеров: зона врага (красная) + позиция (зелёная)
         if M.trig_draw:get() and M.trig_enable:get() then
+            -- pending-зона (локация 1 помечена, ждём сохранения позиции)
+            if S.pending_zone then
+                local pzs = vector(S.pending_zone.x, S.pending_zone.y, S.pending_zone.z):to_screen()
+                if pzs then
+                    render.text(2, pzs, color(255, 230, 40, 255), "c", "ZONE SET - press loc2 key")
+                end
+            end
             for i = 1, #S.triggers do
                 local t = S.triggers[i]
                 local ez = vector(t.enemy.x, t.enemy.y, t.enemy.z):to_screen()
