@@ -86,6 +86,7 @@ local bot = {}; do
         escape_dir = nil,
         escape_until = 0,
         airlag_state = true,
+        tracking_dormant = false,
     }
 
     M.clear_btn:set_callback(function()
@@ -103,19 +104,41 @@ local bot = {}; do
         if M.fl_limit then M.fl_limit:override() end
     end
 
+    -- network state reliability (per Neverlose API get_network_state):
+    -- 0 = not dormant (visible), 1 = dormant but 100% known pos,
+    -- 2 = shared esp, 3 = sounds, 4 = not updated, 5 = unavailable/too old
+    local function pos_reliable(e)
+        if not e.get_network_state then return true end
+        local st = e:get_network_state()
+        return st ~= nil and st <= 3   -- accept visible + dormant-with-known-pos
+    end
+
+    -- returns nearest enemy (including DORMANT ones), its distance, and whether
+    -- it's currently dormant. dormant enemies still report their LAST KNOWN
+    -- origin, so the bot walks toward where they were last seen instead of
+    -- freezing. Stale/unreliable dormant data (state 4-5) is ignored.
     local function get_closest_enemy(lp)
-        local enemies = entity.get_players(true)
+        -- include_dormant = true so we don't lose the target when it goes dark
+        local enemies = entity.get_players(true, true)
         if not enemies then return nil end
         local mo = lp:get_origin()
-        local bd, b = math.huge, nil
+        local bd, b, b_dormant = math.huge, nil, false
         for i = 1, #enemies do
             local e = enemies[i]
             if e:is_alive() then
-                local d = mo:dist(e:get_origin())
-                if d < bd then bd, b = d, e end
+                local dormant = e.is_dormant and e:is_dormant() or false
+                -- skip dormant enemies whose position data is stale/garbage
+                if (not dormant) or pos_reliable(e) then
+                    local eo = e:get_origin()
+                    -- guard against garbage origin (0,0,0) for unavailable data
+                    if eo and (eo.x ~= 0 or eo.y ~= 0) then
+                        local d = mo:dist(eo)
+                        if d < bd then bd, b, b_dormant = d, e, dormant end
+                    end
+                end
             end
         end
-        return b, bd
+        return b, bd, b_dormant
     end
 
     local function rotate_dir(dir, deg)
@@ -440,7 +463,8 @@ local bot = {}; do
             return
         end
 
-        local enemy, dist = get_closest_enemy(lp)
+        local enemy, dist, enemy_dormant = get_closest_enemy(lp)
+        S.tracking_dormant = enemy_dormant or false
 
         -- replay trigger
         local should_start = false
@@ -492,12 +516,16 @@ local bot = {}; do
         local on_ground = lp.m_fFlags and bit.band(lp.m_fFlags, FL_ONGROUND) == 1
 
         -- compute enemy visibility ONCE (used by airlag + combat)
+        -- a dormant enemy is NOT visible (we only know last-known pos), so we
+        -- never fire/airlag at it - we just walk toward its position.
         local eye = lp:get_eye_position()
-        local head = enemy:get_hitbox_position(1)
         local enemy_visible = false
-        if eye and head then
-            -- world-only trace: if it reaches the head, enemy is in the open
-            enemy_visible = trace_world(eye, head, lp) > 0.99
+        if not enemy_dormant then
+            local head = enemy:get_hitbox_position(1)
+            if eye and head then
+                -- world-only trace: if it reaches the head, enemy is in the open
+                enemy_visible = trace_world(eye, head, lp) > 0.99
+            end
         end
 
         -- DT / air lag: only when enemy is VISIBLE (in sight). Off otherwise / after kill.
@@ -678,6 +706,7 @@ local bot = {}; do
             status = string.format("REPLAYING %d/%d", S.replay_index, #S.recorded); clr = color(60, 150, 255, 230)
         elseif M.walk_to_enemy:get() then
             local extra = (S.escape_dir ~= nil) and " [ESCAPING WALL]" or ""
+            if S.tracking_dormant then extra = extra .. " [DORMANT]" end
             status = "NAVIGATING" .. extra; clr = color(60, 255, 130, 230)
         else
             return
