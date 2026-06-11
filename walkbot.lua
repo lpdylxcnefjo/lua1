@@ -87,6 +87,11 @@ local bot = {}; do
         escape_until = 0,
         airlag_state = true,
         tracking_dormant = false,
+        -- committed waypoint path (built once, followed node-by-node)
+        path = {},
+        path_idx = 1,
+        path_target = nil,   -- enemy pos when the path was built
+        path_built_tick = 0,
     }
 
     M.clear_btn:set_callback(function()
@@ -503,6 +508,9 @@ local bot = {}; do
             S.persisted_dir = nil
             S.stuck_counter = 0
             S.escape_dir = nil
+            S.path = {}
+            S.path_idx = 1
+            S.path_target = nil
             reset_overrides()
             return
         end
@@ -577,6 +585,9 @@ local bot = {}; do
             S.persisted_dir = nil
             S.stuck_counter = 0
             S.escape_dir = nil
+            S.path = {}
+            S.path_idx = 1
+            S.path_target = nil
             return
         end
 
@@ -606,13 +617,15 @@ local bot = {}; do
         -- pick direction
         local final_dir
         local enemy_pos = vector(eo.x, eo.y, mo.z + M.trace_height:get())
+        local feet0 = lp:get_origin()
+        local self_pos = vector(feet0.x, feet0.y, feet0.z + M.trace_height:get())
 
         if M.wall_follow:get() and S.stuck_counter > 12 then
+            -- hard stuck: ditch the committed path and escape via open corridor
+            S.path = {}
             local need_new = (S.escape_dir == nil) or (globals.tickcount > S.escape_until)
             if not need_new then
-                local feet = lp:get_origin()
-                local origin = vector(feet.x, feet.y, feet.z + M.trace_height:get())
-                if open_dist_dir(lp, origin, S.escape_dir, M.scan_distance:get()) < 50 then
+                if open_dist_dir(lp, self_pos, S.escape_dir, M.scan_distance:get()) < 50 then
                     need_new = true
                 end
             end
@@ -624,35 +637,79 @@ local bot = {}; do
             S.persisted_dir = final_dir
         else
             S.escape_dir = nil
-            -- HEAVY: recompute desired direction only every 6 ticks (cached)
-            if S.cached_desired == nil or (globals.tickcount - S.last_choose_tick) >= 6 then
-                local desired = choose_direction(lp, enemy_pos)
-                local feet = lp:get_origin()
-                local origin = vector(feet.x, feet.y, feet.z + M.trace_height:get())
-                local wpx, wpy = compute_wall_push(lp, origin)
-                local nx, ny = desired.x + wpx, desired.y + wpy
-                local nl = math.sqrt(nx * nx + ny * ny)
-                if nl > 0.001 then desired = vector(nx / nl, ny / nl, 0) end
-                S.cached_desired = desired
-                S.last_choose_tick = globals.tickcount
+
+            -- ===== COMMITTED WAYPOINT PATH =====
+            -- Build a full route ONCE, then follow it node-by-node. Only rebuild
+            -- when: no path, enemy drifted far from the planned target, we ran
+            -- out of nodes, or we've been stuck. This stops the constant
+            -- per-tick re-planning that made it indecisive / confused.
+            local need_rebuild = false
+            if #S.path < 2 or S.path_idx >= #S.path then
+                need_rebuild = true
+            elseif S.path_target == nil then
+                need_rebuild = true
+            elseif S.path_target:dist(enemy_pos) > 250 then
+                -- enemy moved a lot since we planned -> replan
+                need_rebuild = true
+            elseif (globals.tickcount - S.path_built_tick) > 256 then
+                -- safety refresh every few seconds
+                need_rebuild = true
             end
-            if not S.persisted_dir then
-                S.persisted_dir = S.cached_desired
+
+            if need_rebuild then
+                local seed = S.persisted_dir or enemy_dir
+                S.path = predict_route(lp, enemy_pos, seed, 40)
+                S.path_idx = 2          -- node 1 is our own feet
+                S.path_target = vector(enemy_pos.x, enemy_pos.y, enemy_pos.z)
+                S.path_built_tick = globals.tickcount
+            end
+
+            -- advance through waypoints we've already reached
+            local wp = S.path[S.path_idx]
+            while wp ~= nil do
+                local dxw = wp.x - self_pos.x
+                local dyw = wp.y - self_pos.y
+                if math.sqrt(dxw * dxw + dyw * dyw) < 40 then
+                    S.path_idx = S.path_idx + 1
+                    wp = S.path[S.path_idx]
+                else
+                    break
+                end
+            end
+
+            local desired
+            if wp ~= nil then
+                -- steer toward the current waypoint
+                local dxw = wp.x - self_pos.x
+                local dyw = wp.y - self_pos.y
+                local wl = math.sqrt(dxw * dxw + dyw * dyw)
+                if wl > 0.001 then
+                    desired = vector(dxw / wl, dyw / wl, 0)
+                else
+                    desired = enemy_dir
+                end
             else
-                S.persisted_dir = rotate_towards(S.persisted_dir, S.cached_desired, M.turn_speed:get())
+                -- ran out of nodes this tick: head straight at the enemy,
+                -- a rebuild will happen next tick
+                desired = enemy_dir
+            end
+
+            -- gentle wall push so we keep clear of corners while following
+            local wpx, wpy = compute_wall_push(lp, self_pos)
+            local nx, ny = desired.x + wpx, desired.y + wpy
+            local nl = math.sqrt(nx * nx + ny * ny)
+            if nl > 0.001 then desired = vector(nx / nl, ny / nl, 0) end
+
+            if not S.persisted_dir then
+                S.persisted_dir = desired
+            else
+                S.persisted_dir = rotate_towards(S.persisted_dir, desired, M.turn_speed:get())
             end
             final_dir = S.persisted_dir
         end
 
-        -- blue predicted route (throttled every 12 ticks)
-        if M.draw_nav:get() then
-            if globals.tickcount - S.last_predict_tick >= 12 then
-                S.predicted_path = predict_route(lp, enemy_pos, final_dir, 30)
-                S.last_predict_tick = globals.tickcount
-            end
-        else
-            S.predicted_path = {}
-        end
+        -- the committed path doubles as the blue visualizer (no separate predict)
+        S.predicted_path = M.draw_nav:get() and S.path or {}
 
         -- vertical (jump vs crouch) cached every 3 ticks
         if (globals.tickcount - S.last_vert_tick) >= 3 then
