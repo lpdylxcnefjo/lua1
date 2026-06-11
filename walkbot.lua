@@ -76,6 +76,7 @@ local bot = {}; do
     local replay_index = 1
     local last_rec_key, last_play_key = false, false
     local predicted_path = {}
+    local last_predict_tick = 0
     local persisted_dir = nil
     local stuck_counter = 0
     local escape_dir = nil
@@ -288,8 +289,8 @@ local bot = {}; do
         local feet = lp:get_origin()
         local h = trace_height:get()
         local pts = { vector(feet.x, feet.y, feet.z + h) }
-        local steps = max_steps or 60
-        local step_dist = 60  -- SHORT steps so line hugs walls tightly
+        local steps = max_steps or 40
+        local step_dist = 80  -- step length; longer = fewer total traces
         local cont_bonus = continuity_bonus:get()
         local cur = pts[1]
         local sim_dir = start_dir
@@ -307,7 +308,7 @@ local bot = {}; do
                 blocked[math.floor(blocked_angle / 30) * 30] = true
 
                 -- immediately re-pick direction excluding blocked ones
-                local rays = 32
+                local rays = 16
                 local best_score = math.huge
                 local best_dir = nil
                 local ep = vector(enemy_pos.x, enemy_pos.y, cur.z)
@@ -349,7 +350,7 @@ local bot = {}; do
             if dist_to_enemy < stop_distance:get() then break end
 
             -- re-evaluate direction from new position (excluding blocked)
-            local rays = 32
+            local rays = 16
             local best_score = math.huge
             local best_dir = sim_dir
             local ep = vector(enemy_pos.x, enemy_pos.y, nxt.z)
@@ -720,9 +721,12 @@ local bot = {}; do
             final_dir = persisted_dir
         end
 
-        -- build predicted route for blue path visualizer
+        -- build predicted route for blue path visualizer (throttled: heavy on traces)
         if draw_nav:get() then
-            predicted_path = predict_route(lp, enemy_pos, final_dir, 60)
+            if globals.tickcount - last_predict_tick >= 8 then
+                predicted_path = predict_route(lp, enemy_pos, final_dir, 40)
+                last_predict_tick = globals.tickcount
+            end
         else
             predicted_path = {}
         end
