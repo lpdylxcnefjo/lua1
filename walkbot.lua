@@ -540,7 +540,9 @@ local bot = {}; do
             end
         end
 
-        if dist <= M.stop_distance:get() then
+        -- only stop at range if we actually SEE the enemy; otherwise keep
+        -- pushing toward their position (don't freeze at a stale spot).
+        if dist <= M.stop_distance:get() and enemy_visible then
             cmd.forwardmove = 0
             cmd.sidemove = 0
             S.predicted_path = {}
