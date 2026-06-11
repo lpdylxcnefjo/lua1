@@ -40,6 +40,12 @@ local bot = {}; do
     M.crouch_gaps     = wg:switch("Auto crouch", true)
     M.use_ladders     = wg:switch("Use ladders", true)
 
+    -- ============ MAP LEARNING ============
+    M.learn_map       = wg:switch("Learn map (walk around)", false)
+    M.use_map         = wg:switch("Use learned map", true)
+    M.node_spacing    = wg:slider("Node spacing", 40, 300, 110, 1, "Min distance between learned nodes")
+    M.clear_map       = wg:button("Clear learned map")
+
     M.combat_enable   = wg:switch("Auto combat", true)
     M.fire_min_damage = wg:slider("Fire min damage", 1, 120, 10, 1)
     M.crouch_on_fire  = wg:switch("Crouch when can hit", true)
@@ -92,6 +98,13 @@ local bot = {}; do
         path_idx = 1,
         path_target = nil,   -- enemy pos when the path was built
         path_built_tick = 0,
+        -- map learning
+        map_nodes = {},       -- { {x,y,z, ladder=bool, crouch=bool}, ... }
+        map_edges = {},       -- map_edges[i] = { j1, j2, ... } adjacency
+        last_node_idx = nil,  -- last node we passed while learning
+        map_dirty = false,    -- needs saving
+        last_save_tick = 0,
+        map_loaded = false,
     }
 
     M.clear_btn:set_callback(function()
@@ -102,6 +115,157 @@ local bot = {}; do
 
     local FL_ONGROUND = 1
     local MOVETYPE_LADDER = 9
+
+    -- ============ MAP LEARNING / GRAPH ============
+    local function map_key()
+        local md = common and common.get_map_data and common.get_map_data()
+        local name = (md and (md.shortname or md.name)) or "unknown"
+        return "walkbot_map_" .. tostring(name)
+    end
+
+    local function load_map()
+        local key = map_key()
+        local raw = db[key]
+        if type(raw) == "string" and #raw > 2 then
+            local ok, data = pcall(json.parse, raw)
+            if ok and type(data) == "table" and data.nodes then
+                S.map_nodes = data.nodes
+                S.map_edges = data.edges or {}
+                S.map_loaded = true
+                return
+            end
+        end
+        S.map_nodes = {}
+        S.map_edges = {}
+        S.map_loaded = true
+    end
+
+    local function save_map()
+        if not S.map_dirty then return end
+        local key = map_key()
+        local ok, raw = pcall(json.stringify, { nodes = S.map_nodes, edges = S.map_edges })
+        if ok then
+            db[key] = raw
+            S.map_dirty = false
+        end
+    end
+
+    local function node_dist(a, b)
+        local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+    end
+
+    -- find nearest node within max_dist, returns index or nil
+    local function nearest_node(pos, max_dist)
+        local best, bi = max_dist or math.huge, nil
+        for i = 1, #S.map_nodes do
+            local d = node_dist(S.map_nodes[i], pos)
+            if d < best then best = d; bi = i end
+        end
+        return bi, best
+    end
+
+    local function add_edge(a, b)
+        if a == b then return end
+        S.map_edges[a] = S.map_edges[a] or {}
+        for _, v in ipairs(S.map_edges[a]) do if v == b then goto done_a end end
+        S.map_edges[a][#S.map_edges[a] + 1] = b
+        ::done_a::
+        S.map_edges[b] = S.map_edges[b] or {}
+        for _, v in ipairs(S.map_edges[b]) do if v == a then return end end
+        S.map_edges[b][#S.map_edges[b] + 1] = a
+    end
+
+    -- record where the player is walking into the graph
+    local function learn_step(lp)
+        local o = lp:get_origin()
+        local pos = { x = o.x, y = o.y, z = o.z }
+        local spacing = M.node_spacing:get()
+        local ni = nearest_node(pos, spacing)
+        if ni == nil then
+            -- create a new node, tag ladder/crouch state
+            local on_ladder = lp.m_MoveType == MOVETYPE_LADDER
+            local ducking = lp.m_fFlags and bit.band(lp.m_fFlags, 2) ~= 0  -- FL_DUCKING
+            S.map_nodes[#S.map_nodes + 1] = {
+                x = o.x, y = o.y, z = o.z,
+                ladder = on_ladder or nil,
+                crouch = ducking or nil,
+            }
+            ni = #S.map_nodes
+            S.map_dirty = true
+        end
+        if S.last_node_idx and S.last_node_idx ~= ni then
+            add_edge(S.last_node_idx, ni)
+            S.map_dirty = true
+        end
+        S.last_node_idx = ni
+    end
+
+    -- A* over the learned graph from start node to goal node
+    local function astar(start_i, goal_i)
+        if start_i == goal_i then return { start_i } end
+        local open = { [start_i] = true }
+        local came = {}
+        local g = { [start_i] = 0 }
+        local function h(i) return node_dist(S.map_nodes[i], S.map_nodes[goal_i]) end
+        local f = { [start_i] = h(start_i) }
+        local guard = 0
+        while next(open) ~= nil do
+            guard = guard + 1
+            if guard > 4000 then break end
+            -- pick lowest f in open
+            local cur, cur_f = nil, math.huge
+            for i in pairs(open) do
+                if (f[i] or math.huge) < cur_f then cur_f = f[i]; cur = i end
+            end
+            if cur == goal_i then
+                local path = { cur }
+                while came[cur] do cur = came[cur]; path[#path + 1] = cur end
+                -- reverse
+                local rev = {}
+                for k = #path, 1, -1 do rev[#rev + 1] = path[k] end
+                return rev
+            end
+            open[cur] = nil
+            local nb = S.map_edges[cur]
+            if nb then
+                for _, n in ipairs(nb) do
+                    local tg = (g[cur] or math.huge) + node_dist(S.map_nodes[cur], S.map_nodes[n])
+                    if tg < (g[n] or math.huge) then
+                        came[n] = cur
+                        g[n] = tg
+                        f[n] = tg + h(n)
+                        open[n] = true
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    -- build a world-point path through the learned map toward enemy_pos
+    local function map_route(lp, enemy_pos)
+        if #S.map_nodes < 2 then return nil end
+        local o = lp:get_origin()
+        local start_i = nearest_node({ x = o.x, y = o.y, z = o.z }, 400)
+        local goal_i = nearest_node(enemy_pos, 600)
+        if not start_i or not goal_i then return nil end
+        local node_path = astar(start_i, goal_i)
+        if not node_path or #node_path < 1 then return nil end
+        local pts = {}
+        for _, idx in ipairs(node_path) do
+            local n = S.map_nodes[idx]
+            pts[#pts + 1] = vector(n.x, n.y, n.z + M.trace_height:get())
+        end
+        return pts
+    end
+
+    M.clear_map:set_callback(function()
+        S.map_nodes = {}
+        S.map_edges = {}
+        S.last_node_idx = nil
+        S.map_dirty = true
+    end)
 
     -- ============ HELPERS ============
     local function reset_overrides()
@@ -455,6 +619,21 @@ local bot = {}; do
             return
         end
 
+        -- load the learned map once for the current map
+        if not S.map_loaded then load_map() end
+
+        -- map learning: while enabled, record the player's path into the graph.
+        -- throttled so we don't index the DB every tick.
+        if M.learn_map:get() then
+            if globals.tickcount % 4 == 0 then
+                learn_step(lp)
+            end
+            if S.map_dirty and (globals.tickcount - S.last_save_tick) > 256 then
+                save_map()
+                S.last_save_tick = globals.tickcount
+            end
+        end
+
         -- recording
         local rkey = M.record_key:get() or false
         if rkey and not S.last_rec_key then
@@ -658,8 +837,18 @@ local bot = {}; do
 
             if need_rebuild then
                 local seed = S.persisted_dir or enemy_dir
-                S.path = predict_route(lp, enemy_pos, seed, 40)
-                S.path_idx = 2          -- node 1 is our own feet
+                -- prefer the LEARNED MAP route (A* over recorded nodes) if we
+                -- have a usable graph; otherwise fall back to live ray-probing.
+                local route = nil
+                if M.use_map:get() then
+                    route = map_route(lp, enemy_pos)
+                end
+                if route and #route >= 2 then
+                    S.path = route
+                else
+                    S.path = predict_route(lp, enemy_pos, seed, 40)
+                end
+                S.path_idx = 2          -- node 1 is our own feet / first node
                 S.path_target = vector(enemy_pos.x, enemy_pos.y, enemy_pos.z)
                 S.path_built_tick = globals.tickcount
             end
@@ -757,13 +946,16 @@ local bot = {}; do
         local screen = render.screen_size()
         local x, y = screen.x * 0.5, screen.y * 0.72
         local status, clr
-        if S.is_recording then
+        if M.learn_map:get() then
+            status = string.format("LEARNING MAP... (%d nodes)", #S.map_nodes); clr = color(255, 200, 40, 230)
+        elseif S.is_recording then
             status = string.format("RECORDING... (%d)", #S.recorded); clr = color(255, 60, 60, 230)
         elseif S.is_replaying then
             status = string.format("REPLAYING %d/%d", S.replay_index, #S.recorded); clr = color(60, 150, 255, 230)
         elseif M.walk_to_enemy:get() then
             local extra = (S.escape_dir ~= nil) and " [ESCAPING WALL]" or ""
             if S.tracking_dormant then extra = extra .. " [DORMANT]" end
+            if #S.map_nodes > 0 then extra = extra .. string.format(" [MAP:%d]", #S.map_nodes) end
             status = "NAVIGATING" .. extra; clr = color(60, 255, 130, 230)
         else
             return
@@ -776,6 +968,7 @@ local bot = {}; do
         S.persisted_dir = nil
         S.stuck_counter = 0
         S.escape_dir = nil
+        save_map()   -- persist learned map before unload
         reset_overrides()
     end)
 end
