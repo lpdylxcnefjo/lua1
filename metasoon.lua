@@ -154,13 +154,12 @@ local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standi
 local aa_right = pui.create(T_AA, "\naa_right", 2)
 
 -- Yaw: 180 / Infway (Infway left untouched for now)
-local yaw_base, yaw_center, yaw_left, yaw_right, yaw_inf_speed
+local yaw_base, yaw_center, yaw_left, yaw_right
 local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"180", "Infway"}, function(s)
-    yaw_base = s:combo("Base", {"local view", "At Target", "Freestanding"})
-    yaw_center = s:slider("Yaw", -180, 180, 0)        -- moves the yaw itself
+    yaw_base = s:combo("Base", {"local view", "At Target"})
+    yaw_center = s:slider("Yaw", -180, 180, 180)      -- moves the yaw itself (180 = face away)
     yaw_left = s:slider("Left Yaw", 0, 180, 0)        -- jitter; 0 = none
     yaw_right = s:slider("Right Yaw", 0, 180, 0)
-    yaw_inf_speed = s:slider("Inf Speed", 1, 20, 8)
 end)
 
 -- Modifier: Center / Offset / 3-Way / Infway + gear (Degrees -> Yaw Modifier/Offset)
@@ -172,8 +171,8 @@ end)
 -- Body Yaw: switch + gear (Left/Right Limit + Options)
 local body_left, body_right, body_options
 local aa_body = aa_right:switch(ico("infinity", "Body Yaw"), false, function(s)
-    body_left = s:slider("Left Limit", -180, 180, -60)
-    body_right = s:slider("Right Limit", -180, 180, 60)
+    body_left = s:slider("Left Limit", 0, 60, 60)
+    body_right = s:slider("Right Limit", 0, 60, 60)
     body_options = s:selectable("Options", {"Avoid Overlap", "Jitter", "Randomize Jitter", "Anti-Bruteforce"})
 end)
 
@@ -260,12 +259,6 @@ local function reset_overrides()
     for _, r in pairs(refs) do ovr(r) end
 end
 
--- Toggle one entry of a native multi-select (selectable), pcall-guarded
-local function ovr_opt(ref, entry, state)
-    if not ref then return end
-    pcall(function() ref:override(state and true or false, entry) end)
-end
-
 -- Membership test for our own pui selectable (:get returns numeric indices)
 local function has(sel, i)
     if type(sel) ~= "table" then return false end
@@ -273,10 +266,8 @@ local function has(sel, i)
     return false
 end
 
-local BASE_NATIVE = {"local view", "At Target", "Freestanding"}
-local MOD_NATIVE  = {"Center", "Offset", "3-way", "Spin"} -- Center / Offset / 3-Way / Infway
-
-local yaw_flip = false
+local BASE_NATIVE = {"local view", "At Target"}
+local MOD_NATIVE  = {"Disabled", "Offset", "3-way", "Spin"} -- Center / Offset / 3-Way / Infway
 
 events.createmove:set(function(cmd)
     local me = entity.get_local_player()
@@ -287,29 +278,32 @@ events.createmove:set(function(cmd)
         reset_overrides()
         return
     end
-    yaw_flip = not yaw_flip
 
     ovr(refs.enabled, true)
-    ovr(refs.yaw, "Backward")                                    -- 180 = face away
     ovr(refs.base, BASE_NATIVE[ref_get(yaw_base, 1)] or "local view")
 
-    -- Yaw center + Left/Right jitter -> native Yaw Offset (moves the yaw itself)
-    local center = ref_get(yaw_center, 0)
-    local side = yaw_flip and ref_get(yaw_right, 0) or -ref_get(yaw_left, 0)
+    -- Yaw center + Left/Right jitter -> native Yaw Offset (moves the yaw itself).
+    -- Each side is held for 2 commands (the extra tick of delay for L/R).
+    local center = ref_get(yaw_center, 180)
+    local right_side = math.floor(cmd.command_number / 2) % 2 == 1
+    local side = right_side and ref_get(yaw_right, 0) or -ref_get(yaw_left, 0)
     ovr(refs.offset, center + side)
 
     -- Modifier -> native Yaw Modifier + its Offset degrees
-    ovr(refs.modifier, MOD_NATIVE[aa_modifier:get()] or "Center")
+    ovr(refs.modifier, MOD_NATIVE[aa_modifier:get()] or "Disabled")
     ovr(refs.mod_offset, ref_get(mod_degrees, 0))
 
-    -- Body Yaw: limits + native Options
+    -- Body Yaw: limits (0..60) + native Options (multi-select set via a table)
     local bsel = body_options and body_options:get() or {}
     ovr(refs.body, has(bsel, 2) and "Jitter" or "Static")        -- 2 = Jitter
-    ovr(refs.body_left, ref_get(body_left, -60))
+    ovr(refs.body_left, ref_get(body_left, 60))
     ovr(refs.body_right, ref_get(body_right, 60))
-    ovr_opt(refs.body_options, "Avoid Overlap", has(bsel, 1))    -- 1 = Avoid Overlap
-    ovr_opt(refs.body_options, "Randomize", has(bsel, 3))        -- 3 = Randomize Jitter
-    ovr_opt(refs.body_options, "Anti Bruteforce", has(bsel, 4))  -- 4 = Anti-Bruteforce
+
+    local opts = {}
+    if has(bsel, 1) then opts[#opts + 1] = "Avoid Overlap" end   -- 1 = Avoid Overlap
+    if has(bsel, 3) then opts[#opts + 1] = "Randomize" end       -- 3 = Randomize Jitter
+    if has(bsel, 4) then opts[#opts + 1] = "Anti Bruteforce" end -- 4 = Anti-Bruteforce
+    ovr(refs.body_options, opts)
 end)
 
 events.shutdown:set(function()
