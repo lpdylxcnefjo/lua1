@@ -26,6 +26,7 @@ local bot = {}; do
     M.continuity      = wg:slider("Continuity bonus", 0, 200, 120, 1)
     M.turn_speed      = wg:slider("Turn speed", 3, 45, 18, 1)
     M.trace_height    = wg:slider("Trace height", 18, 64, 36, 1)
+    M.corner_peek     = wg:switch("Look around corners", true)
 
     M.wall_fear       = wg:switch("Move away from walls", true)
     M.fear_distance   = wg:slider("Wall keep distance", 10, 150, 55, 1)
@@ -171,6 +172,14 @@ local bot = {}; do
         return trace_world(top, bottom, lp) * (max_drop + 8) - 8
     end
 
+    -- absolute Z of the floor under (x, y), searched around a reference height
+    local function ground_z(lp, x, y, ref_z)
+        local up, down = 64, 256
+        local top = vector(x, y, ref_z + up)
+        local fr = trace_world(top, vector(x, y, ref_z - down), lp)
+        return (ref_z + up) - fr * (up + down)
+    end
+
     -- Catmull-Rom spline point (for a smoothly curving nav line)
     local function catmull(p0, p1, p2, p3, t)
         local t2, t3 = t * t, t * t * t
@@ -199,17 +208,30 @@ local bot = {}; do
         local d2e = math.sqrt(dx * dx + dy * dy)
         if d2e < 1 then return 999999, 1 end
 
-        local tex, tey = dx / d2e, dy / d2e
-        local s2len = math.min(step_dist, d2e)
-        local s2 = vector(p1.x + tex * s2len, p1.y + tey * s2len, origin.z)
-        local frac2 = trace_world(p1, s2, lp)
-        local travel2 = frac2 * s2len
-        local p2 = vector(p1.x + tex * travel2, p1.y + tey * travel2, origin.z)
-
-        local fdx = enemy_pos.x - p2.x
-        local fdy = enemy_pos.y - p2.y
-        local final_dist = math.sqrt(fdx * fdx + fdy * fdy)
         local openness = travel1 / step_dist
+        local s2len = math.min(step_dist, d2e)
+        local base_ang = math.atan2(dy, dx)
+        local final_dist
+        if M.corner_peek:get() then
+            -- peek around the corner: fan onward rays from p1 toward the enemy and
+            -- keep the one that ends up closest (best route around a wall)
+            final_dist = d2e
+            for k = -2, 2 do
+                local ang = base_ang + math.rad(k * 30)
+                local cx, cy = math.cos(ang), math.sin(ang)
+                local travel2 = trace_world(p1, vector(p1.x + cx * s2len, p1.y + cy * s2len, origin.z), lp) * s2len
+                local px, py = p1.x + cx * travel2, p1.y + cy * travel2
+                local fdx, fdy = enemy_pos.x - px, enemy_pos.y - py
+                local fdist = math.sqrt(fdx * fdx + fdy * fdy)
+                if fdist < final_dist then final_dist = fdist end
+            end
+        else
+            local tex, tey = dx / d2e, dy / d2e
+            local travel2 = trace_world(p1, vector(p1.x + tex * s2len, p1.y + tey * s2len, origin.z), lp) * s2len
+            local px, py = p1.x + tex * travel2, p1.y + tey * travel2
+            local fdx, fdy = enemy_pos.x - px, enemy_pos.y - py
+            final_dist = math.sqrt(fdx * fdx + fdy * fdy)
+        end
         if M.avoid_ledges:get() then
             local th = M.trace_height:get()
             local md = M.max_drop:get()
@@ -322,7 +344,10 @@ local bot = {}; do
                 travel = 15
             end
 
-            local nxt = vector(cur.x + sim_dir.x * travel, cur.y + sim_dir.y * travel, cur.z)
+            local th = M.trace_height:get()
+            local nx_x, nx_y = cur.x + sim_dir.x * travel, cur.y + sim_dir.y * travel
+            local gz = ground_z(lp, nx_x, nx_y, cur.z - th)
+            local nxt = vector(nx_x, nx_y, gz + th)
             pts[#pts + 1] = nxt
 
             local dxe = enemy_pos.x - nxt.x
