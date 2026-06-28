@@ -153,23 +153,28 @@ local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standi
 
 local aa_right = pui.create(T_AA, "\naa_right", 2)
 
--- Yaw: 180 / Infway, each with its own settings (gear)
-local yaw_left, yaw_right, yaw_inf_speed
+-- Yaw: 180 / Infway (Infway left untouched for now)
+local yaw_base, yaw_center, yaw_left, yaw_right, yaw_inf_speed
 local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"180", "Infway"}, function(s)
-    yaw_left = s:slider("Left Limit", 0, 180, 60)
-    yaw_right = s:slider("Right Limit", 0, 180, 60)
+    yaw_base = s:combo("Base", {"local view", "At Target", "Freestanding"})
+    yaw_center = s:slider("Yaw", -180, 180, 0)        -- moves the yaw itself
+    yaw_left = s:slider("Left Yaw", 0, 180, 0)        -- jitter; 0 = none
+    yaw_right = s:slider("Right Yaw", 0, 180, 0)
     yaw_inf_speed = s:slider("Inf Speed", 1, 20, 8)
 end)
 
--- Modifier: Center / Offset / 3-Way / Infway
-local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Center", "Offset", "3-Way", "Infway"})
+-- Modifier: Center / Offset / 3-Way / Infway + gear (Degrees -> Yaw Modifier/Offset)
+local mod_degrees
+local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Center", "Offset", "3-Way", "Infway"}, function(s)
+    mod_degrees = s:slider("Degrees", -180, 180, 0)
+end)
 
--- Body Yaw: switch + gear (Mode / Randomize / Amount 0..60)
-local body_mode, body_random, body_amount
+-- Body Yaw: switch + gear (Left/Right Limit + Options)
+local body_left, body_right, body_options
 local aa_body = aa_right:switch(ico("infinity", "Body Yaw"), false, function(s)
-    body_mode = s:combo("Mode", {"Static", "Jitter"})
-    body_random = s:switch("Randomize", false)
-    body_amount = s:slider("Amount", 0, 60, 60)
+    body_left = s:slider("Left Limit", -180, 180, -60)
+    body_right = s:slider("Right Limit", -180, 180, 60)
+    body_options = s:selectable("Options", {"Avoid Overlap", "Jitter", "Randomize Jitter", "Anti-Bruteforce"})
 end)
 
 -- Options: multi-select (Delay / Custom tick-base / Anti-brute)
@@ -234,6 +239,8 @@ local refs = {
     body_left  = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Left Limit"),
     body_right = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Right Limit"),
     inverter   = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Inverter"),
+    offset     = nl("Aimbot", "Anti Aim", "Angles", "Yaw", "Offset"),
+    body_options = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Options"),
 }
 
 local function ref_get(ref, default)
@@ -253,58 +260,56 @@ local function reset_overrides()
     for _, r in pairs(refs) do ovr(r) end
 end
 
-local body_flip = false
+-- Toggle one entry of a native multi-select (selectable), pcall-guarded
+local function ovr_opt(ref, entry, state)
+    if not ref then return end
+    pcall(function() ref:override(state and true or false, entry) end)
+end
+
+-- Membership test for our own pui selectable (:get returns numeric indices)
+local function has(sel, i)
+    if type(sel) ~= "table" then return false end
+    for _, v in ipairs(sel) do if v == i then return true end end
+    return false
+end
+
+local BASE_NATIVE = {"local view", "At Target", "Freestanding"}
+local MOD_NATIVE  = {"Center", "Offset", "3-way", "Spin"} -- Center / Offset / 3-Way / Infway
+
+local yaw_flip = false
 
 events.createmove:set(function(cmd)
     local me = entity.get_local_player()
     if not me or not me:is_alive() then return end
 
-    -- In the old builder the Body Yaw switch is the master enable
+    -- The Body Yaw switch is the master enable for the builder
     if not aa_body:get() then
         reset_overrides()
         return
     end
+    yaw_flip = not yaw_flip
 
     ovr(refs.enabled, true)
-    ovr(refs.base, "local view")
-    ovr(refs.yaw, "Backward") -- 180 = face away
+    ovr(refs.yaw, "Backward")                                    -- 180 = face away
+    ovr(refs.base, BASE_NATIVE[ref_get(yaw_base, 1)] or "local view")
 
-    -- Yaw Modifier -> native "Yaw Modifier" + its Offset degrees
-    if aa_yaw:get() == 2 then               -- Infway = continuous Spin
-        ovr(refs.modifier, "Spin")
-        ovr(refs.mod_offset, ref_get(yaw_inf_speed, 8))
-    else
-        local mod = aa_modifier:get()
-        if mod == 2 then                    -- Offset
-            ovr(refs.modifier, "Offset")
-            ovr(refs.mod_offset, ref_get(yaw_right, 60))
-        elseif mod == 3 then                -- 3-Way
-            ovr(refs.modifier, "3-way")
-            ovr(refs.mod_offset, ref_get(yaw_left, 60))
-        elseif mod == 4 then                -- Infway
-            ovr(refs.modifier, "Spin")
-            ovr(refs.mod_offset, ref_get(yaw_inf_speed, 8))
-        else                                -- Center
-            ovr(refs.modifier, "Disabled")
-            ovr(refs.mod_offset, 0)
-        end
-    end
+    -- Yaw center + Left/Right jitter -> native Yaw Offset (moves the yaw itself)
+    local center = ref_get(yaw_center, 0)
+    local side = yaw_flip and ref_get(yaw_right, 0) or -ref_get(yaw_left, 0)
+    ovr(refs.offset, center + side)
 
-    -- Body Yaw desync (0..60), jitter via per-tick inverter flip
-    local amount = ref_get(body_amount, 60)
-    local jitter = ref_get(body_mode, 1) == 2
-    ovr(refs.body, jitter and "Jitter" or "Static")
+    -- Modifier -> native Yaw Modifier + its Offset degrees
+    ovr(refs.modifier, MOD_NATIVE[aa_modifier:get()] or "Center")
+    ovr(refs.mod_offset, ref_get(mod_degrees, 0))
 
-    if jitter then
-        body_flip = not body_flip
-        ovr(refs.inverter, body_flip)
-        if ref_get(body_random, false) then
-            amount = math.random(0, amount)
-        end
-    end
-
-    ovr(refs.body_left, -amount)
-    ovr(refs.body_right, amount)
+    -- Body Yaw: limits + native Options
+    local bsel = body_options and body_options:get() or {}
+    ovr(refs.body, has(bsel, 2) and "Jitter" or "Static")        -- 2 = Jitter
+    ovr(refs.body_left, ref_get(body_left, -60))
+    ovr(refs.body_right, ref_get(body_right, 60))
+    ovr_opt(refs.body_options, "Avoid Overlap", has(bsel, 1))    -- 1 = Avoid Overlap
+    ovr_opt(refs.body_options, "Randomize", has(bsel, 3))        -- 3 = Randomize Jitter
+    ovr_opt(refs.body_options, "Anti Bruteforce", has(bsel, 4))  -- 4 = Anti-Bruteforce
 end)
 
 events.shutdown:set(function()
