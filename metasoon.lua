@@ -153,26 +153,31 @@ local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standi
 
 local aa_right = pui.create(T_AA, "\naa_right", 2)
 
+-- Master enable for the Anti-Aim builder
+local aa_enable = aa_right:switch(ico("power-off", "Enabled"), false)
+
 -- Yaw: 180 / Infway, each with its own settings (gear)
+local yaw_left, yaw_right, yaw_inf_speed
 local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"180", "Infway"}, function(s)
-    s:slider("Left Limit", 0, 180, 60)
-    s:slider("Right Limit", 0, 180, 60)
-    s:slider("Inf Speed", 1, 20, 8)
+    yaw_left = s:slider("Left Limit", 0, 180, 60)
+    yaw_right = s:slider("Right Limit", 0, 180, 60)
+    yaw_inf_speed = s:slider("Inf Speed", 1, 20, 8)
 end)
 
 -- Modifier: Center / Offset / 3-Way / Infway
 local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Center", "Offset", "3-Way", "Infway"})
 
 -- Body Yaw: enable toggle + always-available settings (gear)
+local body_mode, body_amount
 local aa_body = aa_right:switch(ico("infinity", "Body Yaw"), false, function(s)
-    s:combo("Mode", {"Static", "Jitter", "Opposite"})
-    s:slider("Amount", 0, 100, 100)
+    body_mode = s:combo("Mode", {"Static", "Jitter", "Opposite"})
+    body_amount = s:slider("Amount", 0, 100, 100)
 end)
 
 -- Options: multi-select (Delay / Custom tick-base / Anti-brute)
 local aa_options = aa_right:selectable(ico("gear", "Options"), {"Delay", "Custom tick-base", "Anti-brute"})
 
-local aa_builder_page = {aa_team, aa_state, aa_yaw, aa_modifier, aa_body, aa_options}
+local aa_builder_page = {aa_enable, aa_team, aa_state, aa_yaw, aa_modifier, aa_body, aa_options}
 
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
@@ -213,8 +218,11 @@ events.aim_ack:set(function(e)
     if e.state then stats.misses = stats.misses + 1 end
 end)
 
--- Minimal Anti-Aim Builder logic (Body Yaw switch = enable)
+-- Anti-Aim Builder logic
 local aa_spin = 0
+local FL_ONGROUND = 1
+local FL_DUCKING = 2
+
 local function aa_opt(i)
     local sel = aa_options:get()
     if type(sel) ~= "table" then return false end
@@ -222,23 +230,47 @@ local function aa_opt(i)
     return false
 end
 
+-- Safely read a sub-item value (gear settings may be nil until built)
+local function ref_get(ref, default)
+    if not ref then return default end
+    return ref:get()
+end
+
+-- Returns true if the selected Anti-Aim State matches the current movement state
+local function state_active(cond, me, cmd)
+    local flags = me.m_fFlags or 0
+    local on_ground = bit.band(flags, FL_ONGROUND) ~= 0
+    local ducking = bit.band(flags, FL_DUCKING) ~= 0
+    local vel = me.m_vecVelocity
+    local speed = vel and math.sqrt(vel.x ^ 2 + vel.y ^ 2) or 0
+    local walking = cmd.in_walk
+
+    if cond == 1 then return on_ground and speed <= 5                    -- Standing
+    elseif cond == 2 then return on_ground and speed > 5 and not walking -- Moving
+    elseif cond == 3 then return on_ground and walking                  -- Walking
+    elseif cond == 4 then return ducking                                -- Crouching
+    elseif cond == 5 then return not on_ground                          -- In Air
+    end
+    return true
+end
+
 events.createmove:set(function(cmd)
     local me = entity.get_local_player()
     if not me or not me:is_alive() then return end
-    if not aa_body:get() then return end
-
-    -- condition gate: 1 Standing (still) / 2 Moving (others = always)
-    local speed = math.sqrt(cmd.forwardmove ^ 2 + cmd.sidemove ^ 2)
-    local cond = aa_state:get()
-    if cond == 1 and speed > 5 then return end
-    if cond == 2 and speed <= 5 then return end
+    if not aa_enable:get() then return end
+    if not state_active(aa_state:get(), me, cmd) then return end
 
     local base = cmd.view_angles.y
-    local target = base + 180 -- Yaw == 1 (180)
+    local target
 
-    if aa_yaw:get() == 2 then -- Infway: continuous spin
-        aa_spin = (aa_spin + 10) % 360
+    if aa_yaw:get() == 2 then                -- Infway: continuous spin
+        aa_spin = (aa_spin + ref_get(yaw_inf_speed, 8)) % 360
         target = base + aa_spin
+    else                                     -- 180: side-to-side crank within limits
+        local left = ref_get(yaw_left, 60)
+        local right = ref_get(yaw_right, 60)
+        local side = (cmd.command_number % 2 == 0) and -left or right
+        target = base + 180 + side
     end
 
     local mod = aa_modifier:get()
@@ -249,6 +281,18 @@ events.createmove:set(function(cmd)
         target = target + (p == 0 and -35 or (p == 1 and 35 or 0))
     elseif mod == 4 then                   -- Infway modifier
         target = target + ((cmd.command_number % 2 == 0) and -60 or 60)
+    end
+
+    if aa_body:get() then                  -- Body Yaw jitter
+        local amount = ref_get(body_amount, 100) * 0.6
+        local bm = ref_get(body_mode, 1)
+        if bm == 2 then                    -- Jitter
+            target = target + ((cmd.command_number % 2 == 0) and -amount or amount)
+        elseif bm == 3 then                -- Opposite
+            target = target - amount
+        else                               -- Static
+            target = target + amount
+        end
     end
 
     if aa_opt(3) then target = target + math.sin(globals.realtime * 3) * 20 end -- Anti-brute
