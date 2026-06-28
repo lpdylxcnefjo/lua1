@@ -159,6 +159,15 @@ local bot = {}; do
         return tr.fraction
     end
 
+    -- body-width footprint so navigation respects the player's ~32u hull and
+    -- won't try to squeeze through gaps/corners a thin ray falsely reports open
+    local NAV_HULL_MIN = vector(-16, -16, -4)
+    local NAV_HULL_MAX = vector(16, 16, 4)
+    local function trace_path(from, to, lp)
+        local tr = utils.trace_hull(from, to, NAV_HULL_MIN, NAV_HULL_MAX, lp, nil, 1)
+        return tr.fraction
+    end
+
     local function norm_angle(a)
         while a > 180 do a = a - 360 end
         while a < -180 do a = a + 360 end
@@ -191,14 +200,14 @@ local bot = {}; do
 
     local function open_dist_dir(lp, origin, dir, max_dist)
         local to = vector(origin.x + dir.x * max_dist, origin.y + dir.y * max_dist, origin.z)
-        return trace_world(origin, to, lp) * max_dist
+        return trace_path(origin, to, lp) * max_dist
     end
 
     -- 2-step lookahead: walk along dir, then from there head toward enemy.
     -- score = distance to enemy after both steps (lower = better)
     local function probe_path_score(lp, origin, dir, enemy_pos, step_dist)
         local s1 = vector(origin.x + dir.x * step_dist, origin.y + dir.y * step_dist, origin.z)
-        local frac1 = trace_world(origin, s1, lp)
+        local frac1 = trace_path(origin, s1, lp)
         local travel1 = frac1 * step_dist
         if travel1 > 4 then travel1 = travel1 - 4 end
         local p1 = vector(origin.x + dir.x * travel1, origin.y + dir.y * travel1, origin.z)
@@ -219,7 +228,7 @@ local bot = {}; do
             for k = -2, 2 do
                 local ang = base_ang + math.rad(k * 30)
                 local cx, cy = math.cos(ang), math.sin(ang)
-                local travel2 = trace_world(p1, vector(p1.x + cx * s2len, p1.y + cy * s2len, origin.z), lp) * s2len
+                local travel2 = trace_path(p1, vector(p1.x + cx * s2len, p1.y + cy * s2len, origin.z), lp) * s2len
                 local px, py = p1.x + cx * travel2, p1.y + cy * travel2
                 local fdx, fdy = enemy_pos.x - px, enemy_pos.y - py
                 local fdist = math.sqrt(fdx * fdx + fdy * fdy)
@@ -227,7 +236,7 @@ local bot = {}; do
             end
         else
             local tex, tey = dx / d2e, dy / d2e
-            local travel2 = trace_world(p1, vector(p1.x + tex * s2len, p1.y + tey * s2len, origin.z), lp) * s2len
+            local travel2 = trace_path(p1, vector(p1.x + tex * s2len, p1.y + tey * s2len, origin.z), lp) * s2len
             local px, py = p1.x + tex * travel2, p1.y + tey * travel2
             local fdx, fdy = enemy_pos.x - px, enemy_pos.y - py
             final_dist = math.sqrt(fdx * fdx + fdy * fdy)
@@ -280,7 +289,11 @@ local bot = {}; do
             fd = fd - op * step_dist * (1 - bias)
             if S.persisted_dir then
                 local al = dir.x * S.persisted_dir.x + dir.y * S.persisted_dir.y
-                if al > 0 then fd = fd - cont * al end
+                if al > 0 then
+                    fd = fd - cont * al
+                elseif al < -0.25 then
+                    fd = fd + 30000 -- don't flip-flop straight backwards
+                end
             end
             if fd < best_score then best_score = fd; best_dir = dir end
         end
@@ -340,14 +353,16 @@ local bot = {}; do
                         if fd < bs then bs = fd; bd = rd end
                     end
                 end
-                if bd then sim_dir = bd end
+                if bd then sim_dir = rotate_towards(sim_dir, bd, 40) end
                 travel = 15
             end
 
             local th = M.trace_height:get()
             local nx_x, nx_y = cur.x + sim_dir.x * travel, cur.y + sim_dir.y * travel
-            local gz = ground_z(lp, nx_x, nx_y, cur.z - th)
-            local nxt = vector(nx_x, nx_y, gz + th)
+            local target_z = ground_z(lp, nx_x, nx_y, cur.z - th) + th
+            -- clamp vertical change so the line follows slopes/stairs without spikes
+            local dz = math.max(-24, math.min(24, target_z - cur.z))
+            local nxt = vector(nx_x, nx_y, cur.z + dz)
             pts[#pts + 1] = nxt
 
             local dxe = enemy_pos.x - nxt.x
@@ -377,7 +392,7 @@ local bot = {}; do
             local ny = bd.y + wpy * 0.5
             local nl = math.sqrt(nx * nx + ny * ny)
             if nl > 0.001 then bd = vector(nx / nl, ny / nl, 0) end
-            sim_dir = bd
+            sim_dir = rotate_towards(sim_dir, bd, 40)
             cur = nxt
         end
         return pts
