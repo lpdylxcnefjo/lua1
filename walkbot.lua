@@ -171,6 +171,15 @@ local bot = {}; do
         return trace_world(top, bottom, lp) * (max_drop + 8) - 8
     end
 
+    -- Catmull-Rom spline point (for a smoothly curving nav line)
+    local function catmull(p0, p1, p2, p3, t)
+        local t2, t3 = t * t, t * t * t
+        local function c(a, b, cc, d)
+            return 0.5 * ((2 * b) + (-a + cc) * t + (2 * a - 5 * b + 4 * cc - d) * t2 + (-a + 3 * b - 3 * cc + d) * t3)
+        end
+        return vector(c(p0.x, p1.x, p2.x, p3.x), c(p0.y, p1.y, p2.y, p3.y), c(p0.z, p1.z, p2.z, p3.z))
+    end
+
     local function open_dist_dir(lp, origin, dir, max_dist)
         local to = vector(origin.x + dir.x * max_dist, origin.y + dir.y * max_dist, origin.z)
         return trace_world(origin, to, lp) * max_dist
@@ -256,16 +265,23 @@ local bot = {}; do
         return best_dir or vector(1, 0, 0)
     end
 
-    local function find_open_corridor(lp)
+    -- Most open direction to escape a wall, biased toward the enemy so the bot
+    -- doesn't just sprint to the most open corner away from its target.
+    local function find_open_corridor(lp, enemy_dir)
         local feet = lp:get_origin()
         local origin = vector(feet.x, feet.y, feet.z + M.trace_height:get())
         local md = M.scan_distance:get()
-        local best_open, best_dir = -1, nil
+        local best_score, best_dir, best_open = -1, nil, 0
         for i = 0, 31 do
             local a = (i / 32) * 360
             local pd = rotate_dir(vector(1, 0, 0), a)
             local od = open_dist_dir(lp, origin, pd, md)
-            if od > best_open then best_open = od; best_dir = pd end
+            local score = od
+            if enemy_dir then
+                local al = pd.x * enemy_dir.x + pd.y * enemy_dir.y -- -1..1
+                score = od * (1 + 0.35 * al)
+            end
+            if score > best_score then best_score = score; best_dir = pd; best_open = od end
         end
         return best_dir, best_open
     end
@@ -610,7 +626,7 @@ local bot = {}; do
         local final_dir
         local enemy_pos = vector(eo.x, eo.y, mo.z + M.trace_height:get())
 
-        if M.wall_follow:get() and S.stuck_counter > 12 then
+        if M.wall_follow:get() and S.stuck_counter > 18 then
             local need_new = (S.escape_dir == nil) or (globals.tickcount > S.escape_until)
             if not need_new then
                 local feet = lp:get_origin()
@@ -620,23 +636,17 @@ local bot = {}; do
                 end
             end
             if need_new then
-                S.escape_dir = find_open_corridor(lp)
+                S.escape_dir = find_open_corridor(lp, enemy_dir)
                 S.escape_until = globals.tickcount + M.commit_ticks:get()
             end
             final_dir = S.escape_dir or enemy_dir
             S.persisted_dir = final_dir
         else
             S.escape_dir = nil
-            -- HEAVY: recompute desired direction only every 6 ticks (cached)
+            -- HEAVY: recompute desired direction only every 6 ticks (cached).
+            -- Wall push is applied per-tick below, not baked in here.
             if S.cached_desired == nil or (globals.tickcount - S.last_choose_tick) >= 6 then
-                local desired = choose_direction(lp, enemy_pos)
-                local feet = lp:get_origin()
-                local origin = vector(feet.x, feet.y, feet.z + M.trace_height:get())
-                local wpx, wpy = compute_wall_push(lp, origin)
-                local nx, ny = desired.x + wpx, desired.y + wpy
-                local nl = math.sqrt(nx * nx + ny * ny)
-                if nl > 0.001 then desired = vector(nx / nl, ny / nl, 0) end
-                S.cached_desired = desired
+                S.cached_desired = choose_direction(lp, enemy_pos)
                 S.last_choose_tick = globals.tickcount
             end
             if not S.persisted_dir then
@@ -645,6 +655,17 @@ local bot = {}; do
                 S.persisted_dir = rotate_towards(S.persisted_dir, S.cached_desired, M.turn_speed:get())
             end
             final_dir = S.persisted_dir
+        end
+
+        -- responsive wall avoidance: steer off nearby walls every tick (not cached)
+        local eye_origin = vector(mo.x, mo.y, mo.z + M.trace_height:get())
+        do
+            local wpx, wpy = compute_wall_push(lp, eye_origin)
+            if wpx ~= 0 or wpy ~= 0 then
+                local nx, ny = final_dir.x + wpx, final_dir.y + wpy
+                local nl = math.sqrt(nx * nx + ny * ny)
+                if nl > 0.001 then final_dir = vector(nx / nl, ny / nl, 0) end
+            end
         end
 
         -- blue predicted route (throttled every 12 ticks)
@@ -684,11 +705,13 @@ local bot = {}; do
         local did_jump = false
         if need_jump and M.jump_obstacles:get() and on_ground and headroom then
             cmd.in_jump = true; did_jump = true
-        elseif S.stuck_counter > 16 and M.jump_obstacles:get() and on_ground and headroom then
+        elseif S.stuck_counter > 22 and M.jump_obstacles:get() and on_ground and headroom then
             cmd.in_jump = true; did_jump = true
         elseif S.escape_dir and on_ground and headroom and M.jump_obstacles:get() and (globals.tickcount % 20 < 2) then
             cmd.in_jump = true; did_jump = true
-        elseif M.auto_bhop:get() and on_ground and not need_crouch and headroom then
+        elseif M.auto_bhop:get() and on_ground and not need_crouch and headroom
+               and not S.escape_dir and S.stuck_counter < 4
+               and open_dist_dir(lp, eye_origin, final_dir, 130) > 100 then
             cmd.in_jump = true; did_jump = true
         end
 
@@ -702,13 +725,22 @@ local bot = {}; do
     events.render:set(function()
         if M.draw_nav:get() and M.walk_to_enemy:get() then
             local pp = S.predicted_path
-            if #pp > 1 then
-                for i = 1, #pp - 1 do
-                    local a = pp[i]:to_screen()
-                    local b = pp[i + 1]:to_screen()
-                    if a and b then
-                        local alpha = math.floor(255 - (i / #pp) * 100)
-                        render.line(a, b, color(40, 160, 255, alpha))
+            local n = #pp
+            if n > 1 then
+                local SEG = 8 -- sub-samples per segment -> smooth curve
+                local prev_scr = pp[1]:to_screen()
+                for i = 1, n - 1 do
+                    local p0 = pp[math.max(1, i - 1)]
+                    local p1 = pp[i]
+                    local p2 = pp[i + 1]
+                    local p3 = pp[math.min(n, i + 2)]
+                    for s = 1, SEG do
+                        local cur_scr = catmull(p0, p1, p2, p3, s / SEG):to_screen()
+                        if prev_scr and cur_scr then
+                            local alpha = math.floor(255 - (i / n) * 120)
+                            render.line(prev_scr, cur_scr, color(40, 160, 255, alpha))
+                        end
+                        prev_scr = cur_scr or prev_scr
                     end
                 end
             end
