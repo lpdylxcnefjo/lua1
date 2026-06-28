@@ -8,6 +8,16 @@ local bot = {}; do
     M.stop_distance   = wg:slider("Stop distance", 50, 600, 200, 1)
     M.move_speed      = wg:slider("Move speed", 0, 450, 250, 1)
     M.look_at_enemy   = wg:switch("Look at enemy", false)
+    M.look_smooth     = wg:switch("Smooth look", true)
+    M.look_speed      = wg:slider("Look speed", 1, 30, 10, 1, "Max degrees turned toward the enemy per tick")
+    M.look_at_enemy:set_callback(function(self)
+        local v = self:get()
+        M.look_smooth:visibility(v)
+        M.look_speed:visibility(v and M.look_smooth:get())
+    end, true)
+    M.look_smooth:set_callback(function(self)
+        M.look_speed:visibility(M.look_at_enemy:get() and self:get())
+    end, true)
 
     M.nav_rays        = wg:slider("Path scan rays", 8, 128, 24, 1)
     M.scan_distance   = wg:slider("Scan distance", 100, 8192, 2400, 1)
@@ -24,6 +34,12 @@ local bot = {}; do
         local v = self:get()
         M.fear_distance:visibility(v)
         M.push_strength:visibility(v)
+    end, true)
+
+    M.avoid_ledges    = wg:switch("Avoid ledges", true)
+    M.max_drop        = wg:slider("Max safe drop", 32, 512, 200, 1, "Refuse paths that drop more than this far down")
+    M.avoid_ledges:set_callback(function(self)
+        M.max_drop:visibility(self:get())
     end, true)
 
     M.wall_follow     = wg:switch("Escape when stuck", true)
@@ -53,6 +69,7 @@ local bot = {}; do
     M.play_key        = group:hotkey("Replay key", 0x54)
     M.trigger_dist    = group:slider("Trigger distance", 50, 1500, 400, 1)
     M.loop_replay     = group:switch("Loop replay", false)
+    M.max_rec_frames  = group:slider("Max record frames", 256, 16384, 4096, 1, "Stop recording past this many frames")
     M.clear_btn       = group:button("Clear recording")
 
     M.play_trigger:set_callback(function(self)
@@ -141,6 +158,19 @@ local bot = {}; do
         return tr.fraction
     end
 
+    local function norm_angle(a)
+        while a > 180 do a = a - 360 end
+        while a < -180 do a = a + 360 end
+        return a
+    end
+
+    -- distance down to solid ground beneath a point; >= max_drop means a cliff/pit
+    local function ground_drop(lp, x, y, z_feet, max_drop)
+        local top = vector(x, y, z_feet + 8)
+        local bottom = vector(x, y, z_feet - max_drop)
+        return trace_world(top, bottom, lp) * (max_drop + 8) - 8
+    end
+
     local function open_dist_dir(lp, origin, dir, max_dist)
         local to = vector(origin.x + dir.x * max_dist, origin.y + dir.y * max_dist, origin.z)
         return trace_world(origin, to, lp) * max_dist
@@ -171,6 +201,13 @@ local bot = {}; do
         local fdy = enemy_pos.y - p2.y
         local final_dist = math.sqrt(fdx * fdx + fdy * fdy)
         local openness = travel1 / step_dist
+        if M.avoid_ledges:get() then
+            local th = M.trace_height:get()
+            local md = M.max_drop:get()
+            if ground_drop(lp, p1.x, p1.y, p1.z - th, md) >= md then
+                final_dist = final_dist + 80000
+            end
+        end
         return final_dist, openness
     end
 
@@ -201,12 +238,15 @@ local bot = {}; do
         local rays = math.floor(M.nav_rays:get())
         local step_dist = M.probe_distance:get()
         local cont = M.continuity:get()
+        local bias = M.enemy_bias:get() / 100
         local best_score, best_dir = math.huge, nil
         for i = 0, rays - 1 do
             local angle = (i / rays) * 360
             local dir = rotate_dir(vector(1, 0, 0), angle)
             local fd, op = probe_path_score(lp, origin, dir, enemy_pos, step_dist)
             if op < 0.15 then fd = fd + 50000 end
+            -- Enemy bias: low bias rewards open corridors, high bias beelines to the enemy
+            fd = fd - op * step_dist * (1 - bias)
             if S.persisted_dir then
                 local al = dir.x * S.persisted_dir.x + dir.y * S.persisted_dir.y
                 if al > 0 then fd = fd - cont * al end
@@ -424,7 +464,11 @@ local bot = {}; do
         S.last_rec_key = rkey
 
         if S.is_recording then
-            S.recorded[#S.recorded + 1] = capture_frame(cmd)
+            if #S.recorded < M.max_rec_frames:get() then
+                S.recorded[#S.recorded + 1] = capture_frame(cmd)
+            else
+                S.is_recording = false
+            end
             return
         end
 
@@ -513,8 +557,19 @@ local bot = {}; do
             if eye and head then
                 local dx, dy, dz = head.x - eye.x, head.y - eye.y, head.z - eye.z
                 local d2d = math.sqrt(dx * dx + dy * dy)
-                cmd.view_angles.x = math.deg(-math.atan2(dz, d2d))
-                cmd.view_angles.y = math.deg(math.atan2(dy, dx))
+                local want_pitch = math.deg(-math.atan2(dz, d2d))
+                local want_yaw = math.deg(math.atan2(dy, dx))
+                if M.look_smooth:get() then
+                    local ls = M.look_speed:get()
+                    local cy, cx = cmd.view_angles.y, cmd.view_angles.x
+                    local dyaw = math.max(-ls, math.min(ls, norm_angle(want_yaw - cy)))
+                    local dpit = math.max(-ls, math.min(ls, want_pitch - cx))
+                    cmd.view_angles.y = cy + dyaw
+                    cmd.view_angles.x = cx + dpit
+                else
+                    cmd.view_angles.x = want_pitch
+                    cmd.view_angles.y = want_yaw
+                end
             end
         end
 
@@ -612,12 +667,26 @@ local bot = {}; do
         local headroom = S.cached_headroom
         if not headroom then need_jump = false; need_crouch = true end
 
+        -- hard ledge guard: never walk straight off a deadly drop
+        if M.avoid_ledges:get() and on_ground then
+            local md = M.max_drop:get()
+            local ax, ay = mo.x + final_dir.x * 45, mo.y + final_dir.y * 45
+            if ground_drop(lp, ax, ay, mo.z, md) >= md then
+                cmd.forwardmove = 0
+                cmd.sidemove = 0
+                S.stuck_counter = S.stuck_counter + 2
+                return
+            end
+        end
+
         fix_movement(cmd, final_dir, M.move_speed:get())
 
         local did_jump = false
         if need_jump and M.jump_obstacles:get() and on_ground and headroom then
             cmd.in_jump = true; did_jump = true
         elseif S.stuck_counter > 16 and M.jump_obstacles:get() and on_ground and headroom then
+            cmd.in_jump = true; did_jump = true
+        elseif S.escape_dir and on_ground and headroom and M.jump_obstacles:get() and (globals.tickcount % 20 < 2) then
             cmd.in_jump = true; did_jump = true
         elseif M.auto_bhop:get() and on_ground and not need_crouch and headroom then
             cmd.in_jump = true; did_jump = true
