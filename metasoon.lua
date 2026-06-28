@@ -153,39 +153,29 @@ local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standi
 
 local aa_right = pui.create(T_AA, "\naa_right", 2)
 
--- The builder drives the cheat's OWN Anti-Aim references.
--- These option lists MUST match the strings in your Neverlose menu, because
--- combos are pushed into the native items via :set(<string>). Tweak them if a
--- future NL build renames an option.
-local YAW_OPTS   = {"Off", "Forward", "Backward", "Right", "Left"}
-local BASE_OPTS  = {"Local View", "At Target", "Freestanding"}
-local MOD_OPTS   = {"Disabled", "Center", "Offset", "Sway", "Spin", "Random", "3-Way"}
-local BODY_OPTS  = {"Disabled", "Static", "Jitter", "Opposite"}
-local PITCH_OPTS = {"Off", "Down", "Up", "Minimal", "Custom"}
-
--- Master enable -> Aimbot/Anti Aim/Angles/Enabled
-local aa_enable = aa_right:switch(ico("power-off", "Enabled"), false)
-
-local aa_yaw    = aa_right:combo(ico("pen", "Yaw"), YAW_OPTS)
-local aa_base   = aa_right:combo(ico("compass", "Yaw Base"), BASE_OPTS)
-local aa_offset = aa_right:slider(ico("ruler-horizontal", "Yaw Offset"), -180, 180, 0)
-
--- Yaw Modifier with its own gear: Degrees (-180..180) -> Yaw Modifier/Offset
-local mod_degrees
-local aa_modifier = aa_right:combo(ico("ruler", "Yaw Modifier"), MOD_OPTS, function(s)
-    mod_degrees = s:slider("Degrees", -180, 180, 0)
+-- Yaw: 180 / Infway, each with its own settings (gear)
+local yaw_left, yaw_right, yaw_inf_speed
+local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"180", "Infway"}, function(s)
+    yaw_left = s:slider("Left Limit", 0, 180, 60)
+    yaw_right = s:slider("Right Limit", 0, 180, 60)
+    yaw_inf_speed = s:slider("Inf Speed", 1, 20, 8)
 end)
 
--- Body Yaw with gear: Left / Right limits
-local body_left, body_right
-local aa_body = aa_right:combo(ico("infinity", "Body Yaw"), BODY_OPTS, function(s)
-    body_left  = s:slider("Left Limit", -180, 180, -60)
-    body_right = s:slider("Right Limit", -180, 180, 60)
+-- Modifier: Center / Offset / 3-Way / Infway
+local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Center", "Offset", "3-Way", "Infway"})
+
+-- Body Yaw: switch + gear (Mode / Randomize / Amount 0..60)
+local body_mode, body_random, body_amount
+local aa_body = aa_right:switch(ico("infinity", "Body Yaw"), false, function(s)
+    body_mode = s:combo("Mode", {"Static", "Jitter"})
+    body_random = s:switch("Randomize", false)
+    body_amount = s:slider("Amount", 0, 60, 60)
 end)
 
-local aa_pitch = aa_right:combo(ico("compass-drafting", "Pitch"), PITCH_OPTS)
+-- Options: multi-select (Delay / Custom tick-base / Anti-brute)
+local aa_options = aa_right:selectable(ico("gear", "Options"), {"Delay", "Custom tick-base", "Anti-brute"})
 
-local aa_builder_page = {aa_enable, aa_team, aa_state, aa_yaw, aa_base, aa_offset, aa_modifier, aa_body, aa_pitch}
+local aa_builder_page = {aa_team, aa_state, aa_yaw, aa_modifier, aa_body, aa_options}
 
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
@@ -227,6 +217,8 @@ events.aim_ack:set(function(e)
 end)
 
 -- Native Neverlose Anti-Aim references (Aimbot > Anti Aim > Angles)
+-- The builder drives these like luasense does: we never write view_angles
+-- ourselves, we :override the cheat's own anti-aim items every tick.
 local function nl(...)
     local ok, ref = pcall(ui.find, ...)
     return ok and ref or nil
@@ -236,47 +228,84 @@ local refs = {
     enabled    = nl("Aimbot", "Anti Aim", "Angles", "Enabled"),
     yaw        = nl("Aimbot", "Anti Aim", "Angles", "Yaw"),
     base       = nl("Aimbot", "Anti Aim", "Angles", "Yaw", "Base"),
-    offset     = nl("Aimbot", "Anti Aim", "Angles", "Yaw", "Offset"),
     modifier   = nl("Aimbot", "Anti Aim", "Angles", "Yaw Modifier"),
     mod_offset = nl("Aimbot", "Anti Aim", "Angles", "Yaw Modifier", "Offset"),
     body       = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw"),
     body_left  = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Left Limit"),
     body_right = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Right Limit"),
-    pitch      = nl("Aimbot", "Anti Aim", "Angles", "Pitch"),
+    inverter   = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Inverter"),
 }
 
--- Read a sub-item value (gear sliders may be nil until their gear is built)
 local function ref_get(ref, default)
     if not ref then return default end
     return ref:get()
 end
 
--- Write a value into a native menu item; ignore missing items / bad strings
-local function set_ref(ref, value)
-    if not ref or value == nil then return end
-    pcall(function() ref:set(value) end)
+-- :override a native item (temporary; does NOT change the saved config).
+-- pcall so a missing item or unknown option string never crashes the script.
+local function ovr(ref, value)
+    if not ref then return end
+    pcall(function() ref:override(value) end)
 end
 
--- Push the builder's settings into the cheat's own Anti-Aim menu
-local function apply_aa()
-    set_ref(refs.enabled, aa_enable:get())
-    if not aa_enable:get() then return end
-
-    set_ref(refs.yaw, YAW_OPTS[aa_yaw:get()])
-    set_ref(refs.base, BASE_OPTS[aa_base:get()])
-    set_ref(refs.offset, aa_offset:get())
-
-    set_ref(refs.modifier, MOD_OPTS[aa_modifier:get()])
-    set_ref(refs.mod_offset, ref_get(mod_degrees, 0)) -- the Degrees gear (-180..180)
-
-    set_ref(refs.body, BODY_OPTS[aa_body:get()])
-    set_ref(refs.body_left, ref_get(body_left, -60))
-    set_ref(refs.body_right, ref_get(body_right, 60))
-
-    set_ref(refs.pitch, PITCH_OPTS[aa_pitch:get()])
+-- Reset every override we may have applied (call when AA is off)
+local function reset_overrides()
+    for _, r in pairs(refs) do ovr(r) end
 end
 
-events.createmove:set(apply_aa)
+local body_flip = false
+
+events.createmove:set(function(cmd)
+    local me = entity.get_local_player()
+    if not me or not me:is_alive() then return end
+
+    -- In the old builder the Body Yaw switch is the master enable
+    if not aa_body:get() then
+        reset_overrides()
+        return
+    end
+
+    ovr(refs.enabled, true)
+    ovr(refs.base, "local view")
+    ovr(refs.yaw, "Backward") -- 180 = face away
+
+    -- Yaw Modifier -> native "Yaw Modifier" + its Offset degrees
+    if aa_yaw:get() == 2 then               -- Infway = continuous Spin
+        ovr(refs.modifier, "Spin")
+        ovr(refs.mod_offset, ref_get(yaw_inf_speed, 8))
+    else
+        local mod = aa_modifier:get()
+        if mod == 2 then                    -- Offset
+            ovr(refs.modifier, "Offset")
+            ovr(refs.mod_offset, ref_get(yaw_right, 60))
+        elseif mod == 3 then                -- 3-Way
+            ovr(refs.modifier, "3-way")
+            ovr(refs.mod_offset, ref_get(yaw_left, 60))
+        elseif mod == 4 then                -- Infway
+            ovr(refs.modifier, "Spin")
+            ovr(refs.mod_offset, ref_get(yaw_inf_speed, 8))
+        else                                -- Center
+            ovr(refs.modifier, "Disabled")
+            ovr(refs.mod_offset, 0)
+        end
+    end
+
+    -- Body Yaw desync (0..60), jitter via per-tick inverter flip
+    local amount = ref_get(body_amount, 60)
+    local jitter = ref_get(body_mode, 1) == 2
+    ovr(refs.body, jitter and "Jitter" or "Static")
+
+    if jitter then
+        body_flip = not body_flip
+        ovr(refs.inverter, body_flip)
+        if ref_get(body_random, false) then
+            amount = math.random(0, amount)
+        end
+    end
+
+    ovr(refs.body_left, -amount)
+    ovr(refs.body_right, amount)
+end)
 
 events.shutdown:set(function()
     store.total = store.total + (globals.realtime - session_start)
