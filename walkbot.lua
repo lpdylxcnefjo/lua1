@@ -260,6 +260,17 @@ local bot = {}; do
                 final_dist = final_dist + 80000
             end
         end
+
+        -- vertical progress: when the enemy is on another level, reward steps
+        -- whose floor moves toward the enemy's height (seek stairs/ramps)
+        local th = M.trace_height:get()
+        local bot_feet = origin.z - th
+        local dz = (enemy_pos.z - th) - bot_feet
+        if math.abs(dz) > 24 then
+            local gz = ground_z(lp, p1.x, p1.y, bot_feet)
+            local vprog = (gz - bot_feet) * (dz > 0 and 1 or -1)
+            final_dist = final_dist - vprog * 4
+        end
         return final_dist, openness
     end
 
@@ -587,7 +598,16 @@ local bot = {}; do
         local eo = enemy:get_origin()
         local enemy_dir = mo:to(eo)
         enemy_dir.z = 0
-        enemy_dir:normalize()
+        local edl = math.sqrt(enemy_dir.x * enemy_dir.x + enemy_dir.y * enemy_dir.y)
+        if edl < 0.1 then
+            -- enemy is directly above/below us: no horizontal bearing, so explore
+            -- to find a way up/down instead of grinding into the wall
+            enemy_dir = S.persisted_dir or vector(1, 0, 0)
+            S.stuck_counter = math.max(S.stuck_counter, 19)
+        else
+            enemy_dir.x = enemy_dir.x / edl
+            enemy_dir.y = enemy_dir.y / edl
+        end
 
         local on_ground = lp.m_fFlags and bit.band(lp.m_fFlags, FL_ONGROUND) == 1
 
@@ -641,7 +661,11 @@ local bot = {}; do
             end
         end
 
-        if dist <= M.stop_distance:get() then
+        -- only "arrived" when close horizontally AND on roughly the same level;
+        -- otherwise keep moving so we can find stairs/ramps to the enemy's floor
+        local hdx, hdy = eo.x - mo.x, eo.y - mo.y
+        local hdist = math.sqrt(hdx * hdx + hdy * hdy)
+        if hdist <= M.stop_distance:get() and math.abs(eo.z - mo.z) <= 64 then
             cmd.forwardmove = 0
             cmd.sidemove = 0
             S.predicted_path = {}
@@ -676,7 +700,7 @@ local bot = {}; do
 
         -- pick direction
         local final_dir
-        local enemy_pos = vector(eo.x, eo.y, mo.z + M.trace_height:get())
+        local enemy_pos = vector(eo.x, eo.y, eo.z + M.trace_height:get())
 
         if M.wall_follow:get() and S.stuck_counter > 18 then
             local need_new = (S.escape_dir == nil) or (globals.tickcount > S.escape_until)
