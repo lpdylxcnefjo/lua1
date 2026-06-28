@@ -160,12 +160,24 @@ local bot = {}; do
     end
 
     -- body-width footprint so navigation respects the player's ~32u hull and
-    -- won't try to squeeze through gaps/corners a thin ray falsely reports open
-    local NAV_HULL_MIN = vector(-16, -16, -4)
-    local NAV_HULL_MAX = vector(16, 16, 4)
+    -- won't try to squeeze through gaps/corners a thin ray falsely reports open.
+    -- Three sweeps cover the whole body column (feet-above-step / torso / head)
+    -- so passages blocked at any height are detected, not just at the waist.
+    local NAV_HULL_MIN = vector(-16, -16, 0)
+    local NAV_HULL_MAX = vector(16, 16, 18)
+    local NAV_ANCHORS  = { 18, 36, 54 } -- feet (above 18u step) / body / head, from feet
     local function trace_path(from, to, lp)
-        local tr = utils.trace_hull(from, to, NAV_HULL_MIN, NAV_HULL_MAX, lp, nil, 1)
-        return tr.fraction
+        local th = M.trace_height:get()
+        local fz, tz = from.z - th, to.z - th -- back down to feet level
+        local best = 1
+        for i = 1, #NAV_ANCHORS do
+            local h = NAV_ANCHORS[i]
+            local fr = utils.trace_hull(
+                vector(from.x, from.y, fz + h), vector(to.x, to.y, tz + h),
+                NAV_HULL_MIN, NAV_HULL_MAX, lp, nil, 1).fraction
+            if fr < best then best = fr end
+        end
+        return best
     end
 
     local function norm_angle(a)
