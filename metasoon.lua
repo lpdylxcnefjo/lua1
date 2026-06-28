@@ -153,31 +153,39 @@ local aa_state = aa_left:combo(ico("person-running", "Anti-Aim State"), {"Standi
 
 local aa_right = pui.create(T_AA, "\naa_right", 2)
 
--- Master enable for the Anti-Aim builder
+-- The builder drives the cheat's OWN Anti-Aim references.
+-- These option lists MUST match the strings in your Neverlose menu, because
+-- combos are pushed into the native items via :set(<string>). Tweak them if a
+-- future NL build renames an option.
+local YAW_OPTS   = {"Off", "Forward", "Backward", "Right", "Left"}
+local BASE_OPTS  = {"Local View", "At Target", "Freestanding"}
+local MOD_OPTS   = {"Disabled", "Center", "Offset", "Sway", "Spin", "Random", "3-Way"}
+local BODY_OPTS  = {"Disabled", "Static", "Jitter", "Opposite"}
+local PITCH_OPTS = {"Off", "Down", "Up", "Minimal", "Custom"}
+
+-- Master enable -> Aimbot/Anti Aim/Angles/Enabled
 local aa_enable = aa_right:switch(ico("power-off", "Enabled"), false)
 
--- Yaw: 180 / Infway, each with its own settings (gear)
-local yaw_left, yaw_right, yaw_inf_speed
-local aa_yaw = aa_right:combo(ico("pen", "Yaw"), {"180", "Infway"}, function(s)
-    yaw_left = s:slider("Left Limit", 0, 180, 60)
-    yaw_right = s:slider("Right Limit", 0, 180, 60)
-    yaw_inf_speed = s:slider("Inf Speed", 1, 20, 8)
+local aa_yaw    = aa_right:combo(ico("pen", "Yaw"), YAW_OPTS)
+local aa_base   = aa_right:combo(ico("compass", "Yaw Base"), BASE_OPTS)
+local aa_offset = aa_right:slider(ico("ruler-horizontal", "Yaw Offset"), -180, 180, 0)
+
+-- Yaw Modifier with its own gear: Degrees (-180..180) -> Yaw Modifier/Offset
+local mod_degrees
+local aa_modifier = aa_right:combo(ico("ruler", "Yaw Modifier"), MOD_OPTS, function(s)
+    mod_degrees = s:slider("Degrees", -180, 180, 0)
 end)
 
--- Modifier: Center / Offset / 3-Way / Infway
-local aa_modifier = aa_right:combo(ico("ruler", "Modifier"), {"Center", "Offset", "3-Way", "Infway"})
-
--- Body Yaw: enable toggle + always-available settings (gear)
-local body_mode, body_amount
-local aa_body = aa_right:switch(ico("infinity", "Body Yaw"), false, function(s)
-    body_mode = s:combo("Mode", {"Static", "Jitter", "Opposite"})
-    body_amount = s:slider("Amount", 0, 100, 100)
+-- Body Yaw with gear: Left / Right limits
+local body_left, body_right
+local aa_body = aa_right:combo(ico("infinity", "Body Yaw"), BODY_OPTS, function(s)
+    body_left  = s:slider("Left Limit", -180, 180, -60)
+    body_right = s:slider("Right Limit", -180, 180, 60)
 end)
 
--- Options: multi-select (Delay / Custom tick-base / Anti-brute)
-local aa_options = aa_right:selectable(ico("gear", "Options"), {"Delay", "Custom tick-base", "Anti-brute"})
+local aa_pitch = aa_right:combo(ico("compass-drafting", "Pitch"), PITCH_OPTS)
 
-local aa_builder_page = {aa_enable, aa_team, aa_state, aa_yaw, aa_modifier, aa_body, aa_options}
+local aa_builder_page = {aa_enable, aa_team, aa_state, aa_yaw, aa_base, aa_offset, aa_modifier, aa_body, aa_pitch}
 
 -- Misc (listbox: Ragebot / Visuals / Misc)
 local misc_nav = pui.create(T_MISC, "\nmisc_nav", 1)
@@ -218,89 +226,57 @@ events.aim_ack:set(function(e)
     if e.state then stats.misses = stats.misses + 1 end
 end)
 
--- Anti-Aim Builder logic
-local aa_spin = 0
-local FL_ONGROUND = 1
-local FL_DUCKING = 2
-
-local function aa_opt(i)
-    local sel = aa_options:get()
-    if type(sel) ~= "table" then return false end
-    for _, v in ipairs(sel) do if v == i then return true end end
-    return false
+-- Native Neverlose Anti-Aim references (Aimbot > Anti Aim > Angles)
+local function nl(...)
+    local ok, ref = pcall(ui.find, ...)
+    return ok and ref or nil
 end
 
--- Safely read a sub-item value (gear settings may be nil until built)
+local refs = {
+    enabled    = nl("Aimbot", "Anti Aim", "Angles", "Enabled"),
+    yaw        = nl("Aimbot", "Anti Aim", "Angles", "Yaw"),
+    base       = nl("Aimbot", "Anti Aim", "Angles", "Yaw", "Base"),
+    offset     = nl("Aimbot", "Anti Aim", "Angles", "Yaw", "Offset"),
+    modifier   = nl("Aimbot", "Anti Aim", "Angles", "Yaw Modifier"),
+    mod_offset = nl("Aimbot", "Anti Aim", "Angles", "Yaw Modifier", "Offset"),
+    body       = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw"),
+    body_left  = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Left Limit"),
+    body_right = nl("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Right Limit"),
+    pitch      = nl("Aimbot", "Anti Aim", "Angles", "Pitch"),
+}
+
+-- Read a sub-item value (gear sliders may be nil until their gear is built)
 local function ref_get(ref, default)
     if not ref then return default end
     return ref:get()
 end
 
--- Returns true if the selected Anti-Aim State matches the current movement state
-local function state_active(cond, me, cmd)
-    local flags = me.m_fFlags or 0
-    local on_ground = bit.band(flags, FL_ONGROUND) ~= 0
-    local ducking = bit.band(flags, FL_DUCKING) ~= 0
-    local vel = me.m_vecVelocity
-    local speed = vel and math.sqrt(vel.x ^ 2 + vel.y ^ 2) or 0
-    local walking = cmd.in_walk
-
-    if cond == 1 then return on_ground and speed <= 5                    -- Standing
-    elseif cond == 2 then return on_ground and speed > 5 and not walking -- Moving
-    elseif cond == 3 then return on_ground and walking                  -- Walking
-    elseif cond == 4 then return ducking                                -- Crouching
-    elseif cond == 5 then return not on_ground                          -- In Air
-    end
-    return true
+-- Write a value into a native menu item; ignore missing items / bad strings
+local function set_ref(ref, value)
+    if not ref or value == nil then return end
+    pcall(function() ref:set(value) end)
 end
 
-events.createmove:set(function(cmd)
-    local me = entity.get_local_player()
-    if not me or not me:is_alive() then return end
+-- Push the builder's settings into the cheat's own Anti-Aim menu
+local function apply_aa()
+    set_ref(refs.enabled, aa_enable:get())
     if not aa_enable:get() then return end
-    if not state_active(aa_state:get(), me, cmd) then return end
 
-    local base = cmd.view_angles.y
-    local target
+    set_ref(refs.yaw, YAW_OPTS[aa_yaw:get()])
+    set_ref(refs.base, BASE_OPTS[aa_base:get()])
+    set_ref(refs.offset, aa_offset:get())
 
-    if aa_yaw:get() == 2 then                -- Infway: continuous spin
-        aa_spin = (aa_spin + ref_get(yaw_inf_speed, 8)) % 360
-        target = base + aa_spin
-    else                                     -- 180: side-to-side crank within limits
-        local left = ref_get(yaw_left, 60)
-        local right = ref_get(yaw_right, 60)
-        local side = (cmd.command_number % 2 == 0) and -left or right
-        target = base + 180 + side
-    end
+    set_ref(refs.modifier, MOD_OPTS[aa_modifier:get()])
+    set_ref(refs.mod_offset, ref_get(mod_degrees, 0)) -- the Degrees gear (-180..180)
 
-    local mod = aa_modifier:get()
-    if mod == 2 then                       -- Offset
-        target = target + 25
-    elseif mod == 3 then                   -- 3-Way
-        local p = cmd.command_number % 3
-        target = target + (p == 0 and -35 or (p == 1 and 35 or 0))
-    elseif mod == 4 then                   -- Infway modifier
-        target = target + ((cmd.command_number % 2 == 0) and -60 or 60)
-    end
+    set_ref(refs.body, BODY_OPTS[aa_body:get()])
+    set_ref(refs.body_left, ref_get(body_left, -60))
+    set_ref(refs.body_right, ref_get(body_right, 60))
 
-    if aa_body:get() then                  -- Body Yaw jitter
-        local amount = ref_get(body_amount, 100) * 0.6
-        local bm = ref_get(body_mode, 1)
-        if bm == 2 then                    -- Jitter
-            target = target + ((cmd.command_number % 2 == 0) and -amount or amount)
-        elseif bm == 3 then                -- Opposite
-            target = target - amount
-        else                               -- Static
-            target = target + amount
-        end
-    end
+    set_ref(refs.pitch, PITCH_OPTS[aa_pitch:get()])
+end
 
-    if aa_opt(3) then target = target + math.sin(globals.realtime * 3) * 20 end -- Anti-brute
-    if aa_opt(1) then cmd.send_packet = (cmd.command_number % 2 == 0) end        -- Delay
-
-    cmd.view_angles.x = 89
-    cmd.view_angles.y = target
-end)
+events.createmove:set(apply_aa)
 
 events.shutdown:set(function()
     store.total = store.total + (globals.realtime - session_start)
