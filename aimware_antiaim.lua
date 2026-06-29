@@ -137,29 +137,42 @@ local function current_state(lp, cmd)
 	return 1 -- Standing
 end
 
+-- is this entity a valid, alive enemy with a real world position?
+local function valid_enemy(e, lp, my, myteam)
+	if e == lp then return false end
+	local alive = false
+	pcall(function() alive = e:IsAlive() end)
+	if not alive then return false end
+	-- must have health (filters dead bodies / non-player junk)
+	if field_int(e, "m_iHealth") <= 0 then return false end
+	-- skip dormant entities (their position is stale/zero)
+	local dormant = false
+	pcall(function() dormant = e:IsDormant() end)
+	if dormant then return false end
+	-- enemy team only (when team is readable)
+	local t = field_int(e, "m_iTeamNum")
+	if myteam ~= 0 and t ~= 0 and t == myteam then return false end
+	-- must have a real origin (controllers / invalid sit at 0,0,0)
+	local okp, p = pcall(function() return e:GetAbsOrigin() end)
+	if not okp or not p then return false end
+	local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
+	if (p.x == 0 and p.y == 0 and p.z == 0) or d2 < 1 then return false end
+	return d2
+end
+
 -- yaw that points at the nearest alive enemy (nil if none found)
 local function target_yaw(lp)
 	local best, best_d
 	local my = lp:GetAbsOrigin()
 	local myteam = field_int(lp, "m_iTeamNum")
-	for _, cls in ipairs({ "CCSPlayer", "C_CSPlayerPawn", "CCSPlayerPawn" }) do
+	for _, cls in ipairs({ "C_CSPlayerPawn", "CCSPlayerPawn", "CCSPlayer" }) do
 		local ok, list = pcall(function() return entities.FindByClass(cls) end)
 		if ok and list then
 			for i = 1, #list do
 				local e = list[i]
-				local alive = false
-				pcall(function() alive = e ~= lp and e:IsAlive() end)
-				if alive then
-					local t = field_int(e, "m_iTeamNum")
-					if myteam == 0 or t == 0 or t ~= myteam then
-						local ok2, d = pcall(function()
-							local p = e:GetAbsOrigin()
-							return (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
-						end)
-						if ok2 and d and (not best_d or d < best_d) then
-							best, best_d = e, d
-						end
-					end
+				local d = valid_enemy(e, lp, my, myteam)
+				if d and (not best_d or d < best_d) then
+					best, best_d = e, d
 				end
 			end
 			if best then break end
