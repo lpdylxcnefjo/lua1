@@ -137,26 +137,6 @@ local function current_state(lp, cmd)
 	return 1 -- Standing
 end
 
--- The cheat calls DrawESP for every player it actually recognizes/draws (i.e.
--- the players you'd see in the scoreboard). We collect those entities each
--- frame and use them as the target source - far more reliable than guessing
--- entity classes / alive flags ourselves.
-local esp_targets = {} -- { ent, ... } rebuilt every ESP pass
-local esp_frame   = {} -- staging for the current pass
-local esp_last_tick = -1
-
-local function on_draw_esp(builder)
-	local ok, e = pcall(function() return builder:GetEntity() end)
-	if not ok or not e then return end
-	local t = globals.TickCount()
-	if t ~= esp_last_tick then -- new frame -> publish previous pass, start fresh
-		esp_targets = esp_frame
-		esp_frame = {}
-		esp_last_tick = t
-	end
-	esp_frame[#esp_frame + 1] = e
-end
-
 -- pull origin as plain numbers (nil if unavailable / at world origin)
 local function origin_of(e)
 	local ok, p = pcall(function() return e:GetAbsOrigin() end)
@@ -165,20 +145,28 @@ local function origin_of(e)
 	return p
 end
 
--- yaw that points at the nearest live enemy from the ESP list (nil if none)
+local target_count = 0 -- live enemies considered last pass (for the indicator)
+
+-- yaw that points at the nearest live enemy player (nil if none). enumerates
+-- only CCSPlayer (players, not dropped weapons), like the API ESP example.
 local function target_yaw(lp)
 	local my = origin_of(lp)
 	if not my then return nil end
 	local myteam = field_int(lp, "m_iTeamNum")
 	local best, best_d
-	for i = 1, #esp_targets do
-		local e = esp_targets[i]
-		if e ~= lp then
-			-- enemy team only when team is actually readable
-			local t = field_int(e, "m_iTeamNum")
-			if not (myteam ~= 0 and t ~= 0 and t == myteam) then
-				local p = origin_of(e)
+	target_count = 0
+	local ok, list = pcall(function() return entities.FindByClass("CCSPlayer") end)
+	if ok and list then
+		for i = 1, #list do
+			local e = list[i]
+			if e ~= lp then
+				local alive = false
+				pcall(function() alive = e:IsAlive() end)
+				local t = field_int(e, "m_iTeamNum")
+				local enemy = not (myteam ~= 0 and t ~= 0 and t == myteam)
+				local p = alive and enemy and origin_of(e) or nil
 				if p then
+					target_count = target_count + 1
 					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
 					if d2 > 1 and (not best_d or d2 < best_d) then
 						best, best_d = p, d2
@@ -189,8 +177,8 @@ local function target_yaw(lp)
 	end
 	if not best then return nil end
 	local ya
-	local ok = pcall(function() ya = (best - my):Angles().y end)
-	if ok and ya then return ya end
+	local ok2 = pcall(function() ya = (best - my):Angles().y end)
+	if ok2 and ya then return ya end
 	return nil
 end
 
@@ -411,7 +399,7 @@ local function on_draw()
 		draw.TextShadow(cx - 60, cy + 61, string.format("YAW: %.1f", cur_yaw))
 		if bm == 1 then
 			draw.TextShadow(cx - 60, cy + 76, string.format("TARGET: %s (%d)",
-				cur_target and "YES" or "NONE", #esp_targets))
+				cur_target and "YES" or "NONE", target_count))
 		end
 	end
 end
@@ -421,4 +409,3 @@ end
 -- ============================================================
 callbacks.Register("PreMove", "aa_premove", pre_move)
 callbacks.Register("Draw", "aa_draw", on_draw)
-callbacks.Register("DrawESP", "aa_esp", on_draw_esp)
