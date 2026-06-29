@@ -210,6 +210,9 @@ g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          tru
 -- standing up automatically whenever an enemy is on screen (Shadow-style, but
 -- without bullet-trace damage which this API can't do)
 g.duck_peek    = gui.Keybox(TABM, "aa_duck_peek", "Duck Peek Assist+", 0)
+-- keep the camera at standing eye height while the duck peek holds you crouched
+-- (Shadow's "Remove Visual Duck Assist"): model stays low, view doesn't drop.
+g.duck_stand_cam = gui.Checkbox(TABM, "aa_duck_stand_cam", "Duck Peek Standing Camera", true)
 
 -- viewmodel offset (Visuals > World > Camera). femka-style: an FFI trampoline
 -- on client.dll adds these X/Y/Z offsets to the viewmodel position. always on
@@ -693,6 +696,15 @@ local function on_draw()
 	local dk = g.duck_peek:GetValue()
 	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
 	duck_active = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
+
+	-- standing camera: while the peek holds us crouched, pin the view offset to
+	-- standing eye height so the camera doesn't drop with the model.
+	if duck_active and g.duck_stand_cam:GetValue() then
+		local clp = entities.GetLocalPlayer()
+		if clp then
+			pcall(function() clp:SetFieldVector(Vector3(0, 0, STAND_EYE_Z), "m_vecViewOffset") end)
+		end
+	end
 
 	-- decide "enemy on screen" here (screen projection only works in Draw).
 	-- Full FOV (180), no distance limit. Independent of the AA master.
