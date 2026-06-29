@@ -59,6 +59,9 @@ g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "At Target")
 -- yaw offset shifts the base yaw (0 = the base value itself)
 g.yaw_offset = gui.Slider(TAB, "aa_yaw_offset", "Yaw Offset", 0, -180, 180, 0.1)
 
+-- At Target: ignore enemies farther than this (0 = no limit). units ~ source2.
+g.target_dist = gui.Slider(TAB, "aa_target_dist", "Target Max Distance", 1500, 0, 8000, 50)
+
 -- modifier: jitter pattern applied on top of the base yaw
 g.modifier   = gui.Combobox(TAB, "aa_modifier", "Modifier", "Disabled", "Center", "Offset", "3-Way", "5-Way", "Anti-Nixware")
 g.mod_left   = gui.Slider  (TAB, "aa_mod_left",   "Modifier Left",   0, 0, 180, 0.1)
@@ -138,7 +141,7 @@ local function current_state(lp, cmd)
 end
 
 -- is this entity a valid, alive enemy with a real world position?
-local function valid_enemy(e, lp, my, myteam)
+local function valid_enemy(e, lp, my, myteam, maxd2)
 	if e == lp then return false end
 	local alive = false
 	pcall(function() alive = e:IsAlive() end)
@@ -157,6 +160,7 @@ local function valid_enemy(e, lp, my, myteam)
 	if not okp or not p then return false end
 	local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
 	if (p.x == 0 and p.y == 0 and p.z == 0) or d2 < 1 then return false end
+	if maxd2 > 0 and d2 > maxd2 then return false end -- too far away
 	return d2
 end
 
@@ -165,12 +169,14 @@ local function target_yaw(lp)
 	local best, best_d
 	local my = lp:GetAbsOrigin()
 	local myteam = field_int(lp, "m_iTeamNum")
+	local md = g.target_dist:GetValue()
+	local maxd2 = (md > 0) and (md * md) or 0
 	for _, cls in ipairs({ "C_CSPlayerPawn", "CCSPlayerPawn", "CCSPlayer" }) do
 		local ok, list = pcall(function() return entities.FindByClass(cls) end)
 		if ok and list then
 			for i = 1, #list do
 				local e = list[i]
-				local d = valid_enemy(e, lp, my, myteam)
+				local d = valid_enemy(e, lp, my, myteam, maxd2)
 				if d and (not best_d or d < best_d) then
 					best, best_d = e, d
 				end
