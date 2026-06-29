@@ -6,7 +6,9 @@
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
-local TAB = gui.Reference("Ragebot", "Auto Peek")
+local TAB  = gui.Reference("Ragebot", "Anti-Aim")
+-- manual directions / conditions / indicator live in the Auto Peek tab
+local TAB2 = gui.Reference("Ragebot", "Auto Peek")
 
 -- ============================================================
 -- constants
@@ -70,21 +72,21 @@ g.mod_random = gui.Checkbox(TAB, "aa_mod_random", "Modifier Random", false)
 g.pitch       = gui.Combobox(TAB, "aa_pitch",       "Pitch", "Disabled", "Down", "Up", "Jitter", "Zero", "Fake Down", "Custom")
 g.pitch_value = gui.Slider  (TAB, "aa_pitch_value", "Pitch Offset", -89, -89, 89, 0.1)
 
--- manual directions
-g.key_right   = gui.Keybox(TAB, "aa_key_right",   "Manual Right",   0)
-g.key_left    = gui.Keybox(TAB, "aa_key_left",    "Manual Left",    0)
-g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
-g.fwd_mode    = gui.Combobox(TAB, "aa_fwd_mode",   "Forward: Mode", "Toggle", "Hold")
+-- manual directions (Auto Peek tab)
+g.key_right   = gui.Keybox(TAB2, "aa_key_right",   "Manual Right",   0)
+g.key_left    = gui.Keybox(TAB2, "aa_key_left",    "Manual Left",    0)
+g.key_forward = gui.Keybox(TAB2, "aa_key_forward", "Manual Forward", 0)
+g.fwd_mode    = gui.Combobox(TAB2, "aa_fwd_mode",   "Forward: Mode", "Toggle", "Hold")
 
 -- brief jitter at the moment a manual direction is switched
-g.switch_jitter = gui.Checkbox(TAB, "aa_switch_jitter", "Manual Switch Jitter", true)
+g.switch_jitter = gui.Checkbox(TAB2, "aa_switch_jitter", "Manual Switch Jitter", true)
 
 -- conditions
-g.on_ladder    = gui.Checkbox(TAB, "aa_on_ladder",    "Disable on Ladder",  true)
-g.on_use       = gui.Checkbox(TAB, "aa_on_use",       "Disable on Use",     true)
-g.disable_shot = gui.Checkbox(TAB, "aa_disable_shot", "Disable on Shot",    true)
-g.anti_invalid = gui.Checkbox(TAB, "aa_anti_invalid", "Anti-Invalid Angle", true)
-g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true)
+g.on_ladder    = gui.Checkbox(TAB2, "aa_on_ladder",    "Disable on Ladder",  true)
+g.on_use       = gui.Checkbox(TAB2, "aa_on_use",       "Disable on Use",     true)
+g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    true)
+g.anti_invalid = gui.Checkbox(TAB2, "aa_anti_invalid", "Anti-Invalid Angle", true)
+g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
 
 -- ============================================================
 -- state
