@@ -544,17 +544,27 @@ local function on_draw()
 	end
 end
 
--- start the duck-peek re-crouch cooldown whenever WE fire a shot
+-- duck peek re-crouch logic (no hitlog UI):
+--   our shot           -> re-crouch ~1.5s (miss / hit-without-kill both count)
+--   our shot kills      -> clear the cooldown (no need to hide, peek the next one)
 local function on_event(event)
-	if event:GetName() ~= "weapon_fire" then return end
-	local ok = pcall(function()
-		if client.GetPlayerIndexByUserID(event:GetInt("userid")) == client.GetLocalPlayerIndex() then
-			duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS
-		end
-	end)
-	if not ok then duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS end
+	local name = event:GetName()
+	if name == "weapon_fire" then
+		local ok = pcall(function()
+			if client.GetPlayerIndexByUserID(event:GetInt("userid")) == client.GetLocalPlayerIndex() then
+				duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS
+			end
+		end)
+		if not ok then duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS end
+	elseif name == "player_hurt" then
+		pcall(function()
+			local by_me = client.GetPlayerIndexByUserID(event:GetInt("attacker")) == client.GetLocalPlayerIndex()
+			if by_me and event:GetInt("health") <= 0 then duck_cd_until = 0 end -- killed
+		end)
+	end
 end
 pcall(function() client.AllowListener("weapon_fire") end)
+pcall(function() client.AllowListener("player_hurt") end)
 
 -- ============================================================
 -- callbacks
