@@ -53,7 +53,7 @@ local MANUAL = {
 local g = {}
 
 g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
-g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw")
+g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw", "At Target")
 
 -- yaw offset shifts the base yaw (0 = the base value itself)
 g.yaw_offset = gui.Slider(TAB, "aa_yaw_offset", "Yaw Offset", 0, -180, 180, 0.1)
@@ -102,6 +102,7 @@ local sweep_start = -1000 -- tick the through-back rotation started
 local cur_state_name = "Standing"
 local cur_group_name = "Pistols"
 local cur_yaw = 0
+local cur_target = false -- At Target: enemy found this frame
 local rand_phase = -1 -- last phase a random way value was picked for
 local rand_idx   = 0
 
@@ -133,6 +134,44 @@ local function current_state(lp, cmd)
 		return 2 -- Moving
 	end
 	return 1 -- Standing
+end
+
+-- yaw that points at the nearest alive enemy (nil if none found)
+local function target_yaw(lp)
+	local best, best_d
+	local my = lp:GetAbsOrigin()
+	local myteam = field_int(lp, "m_iTeamNum")
+	for _, cls in ipairs({ "CCSPlayer", "C_CSPlayerPawn", "CCSPlayerPawn" }) do
+		local ok, list = pcall(function() return entities.FindByClass(cls) end)
+		if ok and list then
+			for i = 1, #list do
+				local e = list[i]
+				local alive = false
+				pcall(function() alive = e ~= lp and e:IsAlive() end)
+				if alive then
+					local t = field_int(e, "m_iTeamNum")
+					if myteam == 0 or t == 0 or t ~= myteam then
+						local ok2, d = pcall(function()
+							local p = e:GetAbsOrigin()
+							return (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
+						end)
+						if ok2 and d and (not best_d or d < best_d) then
+							best, best_d = e, d
+						end
+					end
+				end
+			end
+			if best then break end
+		end
+	end
+	if not best then return nil end
+	local ya
+	local ok = pcall(function()
+		local dir = best:GetAbsOrigin() - my
+		ya = dir:Angles().y
+	end)
+	if ok and ya then return ya end
+	return nil
 end
 
 local function wrap180(a)
@@ -205,9 +244,15 @@ local function pre_move(cmd)
 
 	local va     = cmd:GetViewAngles()
 	local tick   = globals.TickCount()
-	local base   = pre_va.y -- local view
 	local state  = current_state(lp, cmd)
 	local wclass = weapon_class(lp)
+	local bmode  = g.base:GetValue() -- 0 Local View, 1 Auto Yaw, 2 At Target
+	local has_target = false
+	local base = pre_va.y -- local view
+	if bmode == 2 then
+		local ty = target_yaw(lp)
+		if ty then base = ty; has_target = true end
+	end
 
 	-- target yaw offset for the active mode (manual offsets are tuned per weapon
 	-- and state; knife -> pistol)
@@ -277,6 +322,7 @@ local function pre_move(cmd)
 		or (wclass == "pistol") and "Pistols" or "Rifles & Snipers"
 	cur_state_name = STATES[state]
 	cur_yaw = va.y
+	cur_target = has_target
 	cmd:SetViewAngles(va)
 end
 
@@ -336,11 +382,16 @@ local function on_draw()
 		if manual == 1 then dir = "RIGHT"
 		elseif manual == 2 then dir = "LEFT"
 		elseif manual == 3 then dir = "FORWARD" end
+		local bm = g.base:GetValue()
+		local mode = (bm == 1) and "AUTO" or (bm == 2) and "AT TARGET" or "LOCAL"
 		draw.Color(120, 200, 255, 255)
-		draw.TextShadow(cx - 60, cy + 16, "AA: " .. (g.base:GetValue() == 1 and "AUTO" or "MANUAL"))
+		draw.TextShadow(cx - 60, cy + 16, "AA: " .. mode)
 		draw.TextShadow(cx - 60, cy + 31, cur_group_name .. " / " .. cur_state_name)
 		draw.TextShadow(cx - 60, cy + 46, "DIR: " .. dir)
 		draw.TextShadow(cx - 60, cy + 61, string.format("YAW: %.1f", cur_yaw))
+		if bm == 2 then
+			draw.TextShadow(cx - 60, cy + 76, "TARGET: " .. (cur_target and "YES" or "NONE"))
+		end
 	end
 end
 
