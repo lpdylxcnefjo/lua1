@@ -93,6 +93,25 @@ g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    tru
 g.anti_invalid = gui.Checkbox(TAB2, "aa_anti_invalid", "Anti-Invalid Angle", true)
 g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
 
+-- locate the native "Duck Peek assist" keybind (Ragebot > Main) so we can read
+-- the key the user bound there and drive the duck ourselves
+local function find_child(obj, name)
+	local found
+	pcall(function()
+		for child in obj:Children() do
+			if child:GetName() == name then found = child; return end
+			local sub = find_child(child, name)
+			if sub then found = sub; return end
+		end
+	end)
+	return found
+end
+
+local native_duck
+pcall(function()
+	native_duck = find_child(gui.Reference("Ragebot", "Main"), "Duck Peek assist")
+end)
+
 -- ============================================================
 -- state
 -- ============================================================
@@ -287,9 +306,11 @@ end
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist runs independently of the AA builder
+	-- duck peek assist runs independently of the AA builder. read the key from
+	-- our own keybox, or fall back to the native "Duck Peek assist" bind.
 	local dk = g.duck_peek:GetValue()
-	if dk ~= 0 and input.IsButtonDown(dk) then force_duck(cmd) end
+	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
+	if type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk) then force_duck(cmd) end
 
 	if not g.master:GetValue() then return end
 
