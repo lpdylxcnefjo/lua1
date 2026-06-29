@@ -29,6 +29,7 @@ local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 -- Auto Yaw: tuned yaw offset (relative to local view) per state.
 -- state index: 1 Standing, 2 Moving, 3 Crouched, 4 In Air.
 local AUTO_YAW = {
+	knife  = { -167, -164, -169, -167 }, -- knife (GetWeaponType == 0)
 	pistol = { -169, -169, -162, -173 }, -- pistols (GetWeaponType == 1)
 	other  = { -145, -152, -158, -154 }, -- rifles & snipers (everything else)
 }
@@ -99,16 +100,13 @@ local function field_int(ent, name)
 	return 0
 end
 
-local function is_pistol(lp)
-	local wt = 0
+-- weapon class for Auto Yaw: "knife" / "pistol" / "other"
+local function weapon_class(lp)
+	local wt = -1
 	pcall(function() wt = lp:GetWeaponType() end)
-	return wt == 1
-end
-
--- manual-builder group index: pistols -> 1, everything else -> 3.
--- Heavy Pistols (2) needs the specific weapon id to detect; editable meanwhile.
-local function weapon_group(lp)
-	return is_pistol(lp) and 1 or 3
+	if wt == 0 then return "knife" end
+	if wt == 1 then return "pistol" end
+	return "other"
 end
 
 local function current_state(lp, cmd)
@@ -161,8 +159,8 @@ local function pre_move(cmd)
 	local tick   = globals.TickCount()
 	local base   = pre_va.y -- local view
 	local state  = current_state(lp, cmd)
-	local pistol = is_pistol(lp)
-	local group  = pistol and 1 or 3
+	local wclass = weapon_class(lp)
+	local group  = (wclass == "pistol") and 1 or 3
 
 	-- yaw: manual override > auto/base mode
 	if manual == 1 then
@@ -175,7 +173,7 @@ local function pre_move(cmd)
 		va.y = base
 	elseif g.base:GetValue() == 1 then
 		-- Auto Yaw: built-in tuned offset per weapon class + state
-		va.y = base + (pistol and AUTO_YAW.pistol or AUTO_YAW.other)[state]
+		va.y = base + AUTO_YAW[wclass][state]
 	else
 		-- Local View: manual per-group + per-state builder
 		local off = state_yaw(st[group][state], tick)
@@ -209,7 +207,8 @@ local function pre_move(cmd)
 	end
 	va.z = 0
 
-	cur_group_name = GROUPS[group]
+	cur_group_name = (wclass == "knife") and "Knife"
+		or (wclass == "pistol") and "Pistols" or "Rifles & Snipers"
 	cur_state_name = STATES[state]
 	cur_yaw = va.y
 	cmd:SetViewAngles(va)
