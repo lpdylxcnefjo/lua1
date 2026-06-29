@@ -64,6 +64,7 @@ g.mod_offset = gui.Slider  (TAB, "aa_mod_offset", "Modifier Offset", 60, -180, 1
 g.mod_3way   = gui.Slider  (TAB, "aa_mod_3way",   "Modifier Range",  45, 0, 180, 0.1)
 g.mod_5way   = gui.Slider  (TAB, "aa_mod_5way",   "Modifier Range",  45, 0, 180, 0.1)
 g.mod_delay  = gui.Slider  (TAB, "aa_mod_delay",  "Modifier Delay",   4, 1, 32, 1)
+g.mod_random = gui.Checkbox(TAB, "aa_mod_random", "Modifier Random", false)
 
 -- pitch
 g.pitch       = gui.Combobox(TAB, "aa_pitch",       "Pitch", "Disabled", "Down", "Up", "Jitter", "Zero", "Fake Down", "Custom")
@@ -99,6 +100,8 @@ local sweep_start = -1000 -- tick the through-back rotation started
 local cur_state_name = "Standing"
 local cur_group_name = "Pistols"
 local cur_yaw = 0
+local rand_phase = -1 -- last phase a random way value was picked for
+local rand_idx   = 0
 
 -- ============================================================
 -- helpers
@@ -158,19 +161,26 @@ local function modifier_jitter(tick)
 		return ((phase % 2) == 0) and -g.mod_left:GetValue() or g.mod_right:GetValue()
 	elseif m == 2 then -- Offset: alternate 0 / offset
 		return ((phase % 2) == 0) and 0 or g.mod_offset:GetValue()
-	elseif m == 3 then -- 3-Way: -a, 0, +a
-		local a = g.mod_3way:GetValue()
-		local p = phase % 3
-		if p == 0 then return -a elseif p == 1 then return 0 end
-		return a
-	elseif m == 4 then -- 5-Way: -a, -a/2, 0, a/2, a
-		local a = g.mod_5way:GetValue()
-		local p = phase % 5
-		if p == 0 then return -a
-		elseif p == 1 then return -a / 2
-		elseif p == 2 then return 0
-		elseif p == 3 then return a / 2 end
-		return a
+	elseif m == 3 or m == 4 then -- 3-Way / 5-Way
+		local vals
+		if m == 3 then
+			local a = g.mod_3way:GetValue()
+			vals = { -a, 0, a }
+		else
+			local a = g.mod_5way:GetValue()
+			vals = { -a, -a / 2, 0, a / 2, a }
+		end
+		local idx
+		if g.mod_random:GetValue() then -- pick a random way per step
+			if phase ~= rand_phase then
+				rand_phase = phase
+				rand_idx = math.random(1, #vals)
+			end
+			idx = rand_idx
+		else -- go through the ways in order
+			idx = (phase % #vals) + 1
+		end
+		return vals[idx]
 	end
 	return 0 -- Anti-Nixware (logic TBD)
 end
@@ -307,6 +317,7 @@ local function on_draw()
 	g.mod_3way:SetInvisible(m ~= 3)
 	g.mod_5way:SetInvisible(m ~= 4)
 	g.mod_delay:SetInvisible(m == 0 or m == 5)
+	g.mod_random:SetInvisible(not (m == 3 or m == 4))
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
 	if not g.master:GetValue() then return end
