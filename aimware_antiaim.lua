@@ -28,7 +28,7 @@ local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
 local SWITCH_JITTER_AMOUNT = 30 -- deg shake right after a manual switch
 local SWITCH_JITTER_TICKS  = 2  -- how long the shake lasts
-local SWEEP_TICKS          = 6  -- ticks to rotate between manuals (through back)
+local SWEEP_TICKS          = 3  -- ticks to rotate between manuals (through back)
 
 -- Auto Yaw: tuned yaw offset (relative to local view) per state.
 -- state index: 1 Standing, 2 Moving, 3 Crouched, 4 In Air.
