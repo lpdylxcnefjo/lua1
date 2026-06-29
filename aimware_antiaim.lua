@@ -101,6 +101,15 @@ g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          tru
 -- without bullet-trace damage which this API can't do)
 g.duck_peek    = gui.Keybox(TABM, "aa_duck_peek", "Duck Peek Assist+", 0)
 
+-- viewmodel override (Ragebot > Main). femka does this with FFI memory writes,
+-- which this API doesn't have, so we drive the CS2 viewmodel cvars instead.
+-- the game clamps these ranges, so it can't go as far as the FFI version.
+g.vm_enable = gui.Checkbox(TABM, "aa_vm_enable", "Viewmodel Override", false)
+g.vm_x      = gui.Slider(TABM, "aa_vm_x",   "Viewmodel X",    2.5, -2.5, 2.5, 0.1)
+g.vm_y      = gui.Slider(TABM, "aa_vm_y",   "Viewmodel Y",      0,   -2,   2, 0.1)
+g.vm_z      = gui.Slider(TABM, "aa_vm_z",   "Viewmodel Z",   -1.5,   -2,   2, 0.1)
+g.vm_fov    = gui.Slider(TABM, "aa_vm_fov", "Viewmodel FOV",   60,   54,  68, 0.1)
+
 -- locate the native "Duck Peek assist" keybind (Ragebot > Main) so we can read
 -- the key the user bound there and drive the duck ourselves
 local function find_child(obj, name)
@@ -130,6 +139,9 @@ local duck_cd_until = 0     -- Duck Peek: re-crouch until this tick after a shot
 local duck_fire_tick = -1000 -- Duck Peek: last tick we fired a shot
 local duck_seen_since = 0   -- Duck Peek: tick the target became visible
 local duck_prev_seen = false -- Duck Peek: previous frame's visibility
+local duck_prev_wt = -2     -- Duck Peek: previous weapon type (switch detect)
+local duck_prev_ground = true -- Duck Peek: previous on-ground state (land detect)
+local vm_last = nil         -- Viewmodel: last applied cvar string (avoid spam)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -363,6 +375,23 @@ local function pre_move(cmd)
 	-- for ~200ms - i.e. something is blocking the shot from the crouch. while
 	-- we're actively firing (hitting from the crouch) we stay down. After a shot
 	-- we re-crouch ~1.5s. Independent of the AA builder.
+	do
+		-- just switched weapon, or just landed from the air: wait ~1.5s before
+		-- the duck peek is allowed to stand (gun isn't ready / you just landed).
+		local now = globals.TickCount()
+		local dlp = entities.GetLocalPlayer()
+		if dlp then
+			local wt = -1
+			pcall(function() wt = dlp:GetWeaponType() end)
+			local onground = bit.band(field_int(dlp, "m_fFlags"), FL_ONGROUND) ~= 0
+			if wt ~= duck_prev_wt or (onground and not duck_prev_ground) then
+				duck_cd_until = now + DUCK_COOLDOWN_TICKS
+			end
+			duck_prev_wt = wt
+			duck_prev_ground = onground
+		end
+	end
+
 	if duck_active then
 		local now    = globals.TickCount()
 		local in_cd  = now < duck_cd_until
@@ -500,7 +529,32 @@ local function handle_forward()
 	end
 end
 
+-- viewmodel override via CS2 cvars (re-applied only when a value changes)
+local function apply_viewmodel()
+	local on = g.vm_enable:GetValue()
+	local x, y, z, fov
+	if on then
+		x, y, z, fov = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue(), g.vm_fov:GetValue()
+	else
+		x, y, z, fov = 2.5, 0, -1.5, 60 -- CS2 defaults
+	end
+	local s = string.format("%.2f:%.2f:%.2f:%.2f", x, y, z, fov)
+	if s == vm_last then return end
+	vm_last = s
+	pcall(function()
+		client.Command(string.format(
+			"viewmodel_offset_x %.2f; viewmodel_offset_y %.2f; viewmodel_offset_z %.2f; viewmodel_fov %.2f",
+			x, y, z, fov), true)
+	end)
+end
+
 local function on_draw()
+	apply_viewmodel()
+	g.vm_x:SetInvisible(not g.vm_enable:GetValue())
+	g.vm_y:SetInvisible(not g.vm_enable:GetValue())
+	g.vm_z:SetInvisible(not g.vm_enable:GetValue())
+	g.vm_fov:SetInvisible(not g.vm_enable:GetValue())
+
 	local m = g.modifier:GetValue()
 	g.mod_left:SetInvisible(m ~= 1)
 	g.mod_right:SetInvisible(m ~= 1)
