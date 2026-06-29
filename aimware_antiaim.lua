@@ -26,6 +26,10 @@ local FL_DUCKING  = bit.lshift(1, 1)
 local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
+local SWITCH_JITTER_AMOUNT = 30 -- deg shake right after a manual switch
+local SWITCH_JITTER_TICKS  = 2  -- how long the shake lasts
+local SWEEP_TICKS          = 6  -- ticks to rotate between manuals (through back)
+
 -- Auto Yaw: tuned yaw offset (relative to local view) per state.
 -- state index: 1 Standing, 2 Moving, 3 Crouched, 4 In Air.
 local AUTO_YAW = {
@@ -84,8 +88,6 @@ g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
 
 -- brief jitter at the moment a manual direction is switched
 g.switch_jitter = gui.Checkbox(TAB, "aa_switch_jitter", "Manual Switch Jitter", true)
-g.switch_amount = gui.Slider  (TAB, "aa_switch_amount", "Switch Jitter Amount", 40, 0, 180, 1)
-g.switch_ticks  = gui.Slider  (TAB, "aa_switch_ticks",  "Switch Jitter Ticks",  2, 1, 16, 1)
 
 -- conditions
 g.on_ladder    = gui.Checkbox(TAB, "aa_on_ladder",    "Disable on Ladder",  true)
@@ -99,7 +101,12 @@ g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true
 -- ============================================================
 local pre_va = EulerAngles(0, 0, 0)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
-local switch_tick = -1000 -- tick when the manual direction was last switched
+local prev_manual = 0
+local switch_tick = -1000 -- tick of last manual switch (for the shake)
+local cur_off    = 0  -- current applied yaw offset (continuous, unwrapped)
+local sweep_from = 0
+local sweep_to   = 0
+local sweep_start = -1000 -- tick the through-back rotation started
 local cur_state_name = "Standing"
 local cur_group_name = "Pistols"
 local cur_yaw = 0
@@ -132,6 +139,24 @@ local function current_state(lp, cmd)
 		return 2 -- Moving
 	end
 	return 1 -- Standing
+end
+
+local function wrap180(a)
+	a = a % 360
+	if a > 180 then a = a - 360 end
+	return a
+end
+
+-- continuous target so the rotation between manuals passes through the back
+-- (~180) instead of crossing the front (0). `from` continuous, `to` wrapped.
+local function sweep_target(from, to)
+	local fw = wrap180(from)
+	if fw >= 0 and to <= 0 then
+		return from + ((to + 360) - fw) -- increase through +180
+	elseif fw <= 0 and to >= 0 then
+		return from + ((to - 360) - fw) -- decrease through -180
+	end
+	return from + (to - fw) -- same side: direct
 end
 
 -- manual-builder yaw offset (relative to base); nil = leave native yaw
@@ -175,33 +200,50 @@ local function pre_move(cmd)
 	local wclass = weapon_class(lp)
 	local group  = (wclass == "pistol") and 1 or 3
 
-	-- manual directions use tuned per-weapon/per-state offsets (knife -> pistol)
+	-- target yaw offset for the active mode (manual offsets are tuned per weapon
+	-- and state; knife -> pistol)
 	local mcls = (wclass == "other") and "other" or "pistol"
-	-- yaw: manual override > auto/base mode
+	local goal
 	if manual == 1 then
-		va.y = base + MANUAL[mcls][state][2] -- right
+		goal = MANUAL[mcls][state][2] -- right
 	elseif manual == 2 then
-		va.y = base + MANUAL[mcls][state][1] -- left
+		goal = MANUAL[mcls][state][1] -- left
 	elseif manual == 3 then
-		va.y = base -- forward
+		goal = 0 -- forward
 	elseif g.base:GetValue() == 1 then
-		-- Auto Yaw: built-in tuned offset per weapon class + state
-		va.y = base + AUTO_YAW[wclass][state]
+		goal = AUTO_YAW[wclass][state] -- Auto Yaw
 	else
-		-- Local View: manual per-group + per-state builder
-		local off = state_yaw(st[group][state], tick)
-		if off == nil then
-			va.y = pre_va.y
-		else
-			va.y = base + off
-		end
+		goal = state_yaw(st[group][state], tick) -- Local View builder (may be nil)
 	end
 
-	-- brief jitter right after switching a manual direction (quick reposition)
+	-- detect a manual switch: left<->right rotates through the back
+	if manual ~= prev_manual then
+		if (manual == 1 or manual == 2) and goal then
+			sweep_from  = cur_off
+			sweep_to    = sweep_target(cur_off, goal)
+			sweep_start = tick
+		end
+		if manual ~= 0 then switch_tick = tick end
+		prev_manual = manual
+	end
+
+	if goal == nil then
+		va.y   = pre_va.y -- builder disabled: leave native yaw
+		cur_off = 0
+	else
+		if (manual == 1 or manual == 2) and (tick - sweep_start) < SWEEP_TICKS then
+			local p = (tick - sweep_start) / SWEEP_TICKS
+			cur_off = sweep_from + (sweep_to - sweep_from) * p
+		else
+			cur_off = cur_off + wrap180(goal - cur_off) -- track shortest
+		end
+		va.y = base + cur_off
+	end
+
+	-- brief shake right after switching a manual direction
 	if manual ~= 0 and g.switch_jitter:GetValue()
-		and (tick - switch_tick) < g.switch_ticks:GetValue() then
-		local amt = g.switch_amount:GetValue()
-		va.y = va.y + (((tick % 2) == 0) and amt or -amt)
+		and (tick - switch_tick) < SWITCH_JITTER_TICKS then
+		va.y = va.y + (((tick % 2) == 0) and SWITCH_JITTER_AMOUNT or -SWITCH_JITTER_AMOUNT)
 	end
 
 	-- pitch
@@ -272,8 +314,6 @@ local function on_draw()
 		end
 	end
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
-	g.switch_amount:SetInvisible(not g.switch_jitter:GetValue())
-	g.switch_ticks:SetInvisible(not g.switch_jitter:GetValue())
 
 	if not g.master:GetValue() then return end
 
