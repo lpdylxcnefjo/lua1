@@ -93,8 +93,13 @@ g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    tru
 g.anti_invalid = gui.Checkbox(TAB2, "aa_anti_invalid", "Anti-Invalid Angle", true)
 g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
 
--- extra duck peek assist (forces crouch while held), placed in Ragebot > Main
-g.duck_peek    = gui.Keybox(TABM, "aa_duck_peek", "Duck Peek Assist+", 0)
+-- extra duck peek assist (Ragebot > Main): hold key to crouch, or Auto mode
+-- (crouch by default, stand when an enemy is in your FOV+range, Shadow-style
+-- but without bullet-trace damage which this API can't do)
+g.duck_peek    = gui.Keybox  (TABM, "aa_duck_peek",  "Duck Peek Assist+", 0)
+g.duck_auto    = gui.Checkbox(TABM, "aa_duck_auto",  "Duck Peek Auto", false)
+g.duck_fov     = gui.Slider  (TABM, "aa_duck_fov",   "Duck Peek FOV", 30, 1, 180, 1)
+g.duck_range   = gui.Slider  (TABM, "aa_duck_range", "Duck Peek Range", 1200, 0, 8000, 50)
 
 -- locate the native "Duck Peek assist" keybind (Ragebot > Main) so we can read
 -- the key the user bound there and drive the duck ourselves
@@ -306,14 +311,56 @@ local function force_duck(cmd)
 	if not ok then pcall(function() cmd.in_duck = true end) end
 end
 
+-- is a live enemy within `fov` degrees of where you're looking and `range`
+-- units away? used by Duck Peek Auto to decide when to stand up and shoot.
+local function enemy_in_view(lp, fov, range)
+	local my = origin_of(lp)
+	if not my then return false end
+	local myteam = field_int(lp, "m_iTeamNum")
+	local range2 = (range > 0) and (range * range) or nil
+	for i = 1, #esp_targets do
+		local e = esp_targets[i]
+		if e ~= lp and is_live_player(e) then
+			local t = field_int(e, "m_iTeamNum")
+			if not (myteam ~= 0 and t ~= 0 and t == myteam) then
+				local p = origin_of(e)
+				if p then
+					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
+					if not range2 or d2 <= range2 then
+						local ya, pa
+						pcall(function() local a = (p - my):Angles(); ya = a.y; pa = a.x end)
+						if ya then
+							local dy = wrap180(ya - pre_va.y)
+							local dp = (pa or pre_va.x) - pre_va.x
+							if math.sqrt(dy * dy + dp * dp) <= fov then return true end
+						end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist runs independently of the AA builder. read the key from
-	-- our own keybox, or fall back to the native "Duck Peek assist" bind.
+	-- duck peek assist runs independently of the AA builder.
+	-- hold mode: read our keybox, or fall back to the native "Duck Peek assist".
 	local dk = g.duck_peek:GetValue()
 	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
-	if type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk) then force_duck(cmd) end
+	local hold = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
+	-- auto mode: crouch by default, stand only when an enemy is in FOV + range
+	local auto_duck = false
+	if g.duck_auto:GetValue() then
+		local dlp = entities.GetLocalPlayer()
+		local alive = false
+		if dlp then pcall(function() alive = dlp:IsAlive() end) end
+		if alive then
+			auto_duck = not enemy_in_view(dlp, g.duck_fov:GetValue(), g.duck_range:GetValue())
+		end
+	end
+	if hold or auto_duck then force_duck(cmd) end
 
 	if not g.master:GetValue() then return end
 
