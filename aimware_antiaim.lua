@@ -56,6 +56,11 @@ g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw")
 g.egroup = gui.Combobox(TAB, "aa_egroup", "Edit Group", unpack(GROUPS))
 g.estate = gui.Combobox(TAB, "aa_estate", "Edit State", unpack(STATES))
 
+-- Auto Yaw tuning (shown only when Yaw Base = Auto Yaw)
+g.auto_offset     = gui.Slider  (TAB, "aa_auto_offset", "Auto Yaw: Offset", 0, -180, 180, 0.1)
+g.auto_jitter     = gui.Checkbox(TAB, "aa_auto_jitter", "Auto Yaw: Modifier Jitter", false)
+g.auto_jitter_amt = gui.Slider  (TAB, "aa_auto_jitamt", "Auto Yaw: Jitter Amount", 15, 0, 90, 0.1)
+
 -- manual builder: per group + per state controls (only the selected pair shown).
 -- labels are prefixed with the group so display names stay unique across the tab.
 local st = {}
@@ -211,7 +216,12 @@ local function pre_move(cmd)
 	elseif manual == 3 then
 		goal = 0 -- forward
 	elseif g.base:GetValue() == 1 then
-		goal = AUTO_YAW[wclass][state] -- Auto Yaw
+		-- Auto Yaw: tuned value + manual offset (+ optional modifier jitter)
+		goal = AUTO_YAW[wclass][state] + g.auto_offset:GetValue()
+		if g.auto_jitter:GetValue() then
+			local a = g.auto_jitter_amt:GetValue()
+			goal = goal + (((tick % 2) == 0) and a or -a)
+		end
 	else
 		goal = state_yaw(st[group][state], tick) -- Local View builder (may be nil)
 	end
@@ -313,6 +323,10 @@ local function on_draw()
 			s.spin:SetInvisible(not (shown and mode == 3))
 		end
 	end
+	local auto_mode = g.base:GetValue() == 1
+	g.auto_offset:SetInvisible(not auto_mode)
+	g.auto_jitter:SetInvisible(not auto_mode)
+	g.auto_jitter_amt:SetInvisible(not (auto_mode and g.auto_jitter:GetValue()))
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
 	if not g.master:GetValue() then return end
