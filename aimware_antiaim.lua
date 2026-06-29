@@ -82,6 +82,11 @@ g.key_right   = gui.Keybox(TAB, "aa_key_right",   "Manual Right",   0)
 g.key_left    = gui.Keybox(TAB, "aa_key_left",    "Manual Left",    0)
 g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
 
+-- brief jitter at the moment a manual direction is switched
+g.switch_jitter = gui.Checkbox(TAB, "aa_switch_jitter", "Manual Switch Jitter", true)
+g.switch_amount = gui.Slider  (TAB, "aa_switch_amount", "Switch Jitter Amount", 40, 0, 180, 1)
+g.switch_ticks  = gui.Slider  (TAB, "aa_switch_ticks",  "Switch Jitter Ticks",  2, 1, 16, 1)
+
 -- conditions
 g.on_ladder    = gui.Checkbox(TAB, "aa_on_ladder",    "Disable on Ladder",  true)
 g.on_use       = gui.Checkbox(TAB, "aa_on_use",       "Disable on Use",     true)
@@ -94,6 +99,7 @@ g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true
 -- ============================================================
 local pre_va = EulerAngles(0, 0, 0)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
+local switch_tick = -1000 -- tick when the manual direction was last switched
 local cur_state_name = "Standing"
 local cur_group_name = "Pistols"
 local cur_yaw = 0
@@ -191,6 +197,13 @@ local function pre_move(cmd)
 		end
 	end
 
+	-- brief jitter right after switching a manual direction (quick reposition)
+	if manual ~= 0 and g.switch_jitter:GetValue()
+		and (tick - switch_tick) < g.switch_ticks:GetValue() then
+		local amt = g.switch_amount:GetValue()
+		va.y = va.y + (((tick % 2) == 0) and amt or -amt)
+	end
+
 	-- pitch
 	local pm = g.pitch:GetValue() -- 0 Disabled,1 Down,2 Up,3 Jitter,4 Zero,5 Fake,6 Custom
 	if pm == 1 then
@@ -227,7 +240,12 @@ end
 local function handle_key(keybox, id)
 	local key = keybox:GetValue()
 	if key ~= 0 and input.IsButtonPressed(key) then
-		manual = (manual == id) and 0 or id
+		if manual == id then
+			manual = 0
+		else
+			manual = id
+			switch_tick = globals.TickCount() -- trigger switch jitter
+		end
 	end
 end
 
@@ -254,6 +272,8 @@ local function on_draw()
 		end
 	end
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
+	g.switch_amount:SetInvisible(not g.switch_jitter:GetValue())
+	g.switch_ticks:SetInvisible(not g.switch_jitter:GetValue())
 
 	if not g.master:GetValue() then return end
 
