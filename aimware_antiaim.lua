@@ -31,6 +31,8 @@ local FL_DUCKING  = bit.lshift(1, 1)
 local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
+local DUCK_COOLDOWN_TICKS = 96 -- ~1.5s re-crouch after a shot (64 tick)
+
 local SWITCH_JITTER_AMOUNT = 30 -- deg shake right after a manual switch
 local SWITCH_JITTER_TICKS  = 2  -- how long the shake lasts
 local SWEEP_TICKS          = 2  -- ticks to rotate between manuals (through back)
@@ -123,6 +125,7 @@ end)
 local pre_va = EulerAngles(0, 0, 0)
 local duck_can_peek = false -- Duck Peek: enemy in view (computed in Draw)
 local duck_active   = false -- Duck Peek: bind held
+local duck_cd_until = 0     -- Duck Peek: re-crouch until this tick after a shot
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -351,10 +354,13 @@ end
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist (toggled on by the bind, handled in Draw): while active
-	-- stay crouched, but stand when an enemy is on screen (duck_can_peek is also
-	-- computed in Draw, where screen projection works). independent of the AA.
-	if duck_active and not duck_can_peek then force_duck(cmd) end
+	-- duck peek assist (bind held, handled in Draw): while active stay crouched,
+	-- but stand when an enemy is on screen. After a shot we re-crouch and wait
+	-- ~1.5s (cooldown) before peeking again. Independent of the AA builder.
+	if duck_active then
+		local in_cd = globals.TickCount() < duck_cd_until
+		if in_cd or not duck_can_peek then force_duck(cmd) end
+	end
 
 	if not g.master:GetValue() then return end
 
@@ -536,9 +542,22 @@ local function on_draw()
 	end
 end
 
+-- start the duck-peek re-crouch cooldown whenever WE fire a shot
+local function on_event(event)
+	if event:GetName() ~= "weapon_fire" then return end
+	local ok = pcall(function()
+		if client.GetPlayerIndexByUserID(event:GetInt("userid")) == client.GetLocalPlayerIndex() then
+			duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS
+		end
+	end)
+	if not ok then duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS end
+end
+pcall(function() client.AllowListener("weapon_fire") end)
+
 -- ============================================================
 -- callbacks
 -- ============================================================
 callbacks.Register("PreMove", "aa_premove", pre_move)
 callbacks.Register("Draw", "aa_draw", on_draw)
 callbacks.Register("DrawESP", "aa_esp", on_draw_esp)
+callbacks.Register("FireGameEvent", "aa_event", on_event)
