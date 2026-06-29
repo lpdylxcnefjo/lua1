@@ -69,6 +69,7 @@ local pre_va = EulerAngles(0, 0, 0)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 back, 4 forward
 local cur_state_name = "Standing"
 local cur_yaw = 0
+local cur_target = false
 
 -- ============================================================
 -- helpers
@@ -79,26 +80,33 @@ local function field_int(ent, name)
 	return 0
 end
 
--- yaw (deg) toward the closest alive enemy, or nil
+-- yaw (deg) toward the closest alive enemy, or nil.
+-- Prefers an opposing-team player, but if the team field can't be read in this
+-- build it falls back to the nearest non-local alive player (the duel target).
 local function target_yaw(lp)
-	local best, best_d
+	local best_enemy, best_enemy_d
+	local best_any,   best_any_d
 	pcall(function()
 		local my_team = field_int(lp, "m_iTeamNum")
 		local my_pos  = lp:GetAbsOrigin()
 		local players = entities.FindByClass("CCSPlayer")
 		for i = 1, #players do
 			local e = players[i]
-			if e and e ~= lp and e:IsAlive() and field_int(e, "m_iTeamNum") ~= my_team then
+			if e and e ~= lp and e:IsAlive() then
 				local dir = e:GetAbsOrigin() - my_pos
 				local d   = dir.x * dir.x + dir.y * dir.y
-				if d > 1 and (not best_d or d < best_d) then
-					best_d = d
-					best   = dir:Angles().y
+				if d > 1 then
+					local yaw = dir:Angles().y
+					local et  = field_int(e, "m_iTeamNum")
+					if my_team ~= 0 and et ~= 0 and et ~= my_team then
+						if not best_enemy_d or d < best_enemy_d then best_enemy_d = d; best_enemy = yaw end
+					end
+					if not best_any_d or d < best_any_d then best_any_d = d; best_any = yaw end
 				end
 			end
 		end
 	end)
-	return best
+	return best_enemy or best_any
 end
 
 local function current_state(lp, cmd)
@@ -150,8 +158,11 @@ local function pre_move(cmd)
 	-- base yaw
 	local base
 	if g.base:GetValue() == 1 then
-		base = target_yaw(lp) or (pre_va.y + 180)
+		local ty = target_yaw(lp)
+		cur_target = ty ~= nil
+		base = ty or (pre_va.y + 180)
 	else
+		cur_target = false
 		base = pre_va.y
 	end
 
@@ -253,6 +264,9 @@ local function on_draw()
 		draw.TextShadow(cx - 60, cy + 16, "AA: " .. cur_state_name)
 		draw.TextShadow(cx - 60, cy + 31, "DIR: " .. dir)
 		draw.TextShadow(cx - 60, cy + 46, string.format("YAW: %.1f", cur_yaw))
+		if g.base:GetValue() == 1 then
+			draw.TextShadow(cx - 60, cy + 61, "TARGET: " .. (cur_target and "YES" or "NONE"))
+		end
 	end
 end
 
