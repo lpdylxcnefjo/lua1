@@ -38,7 +38,7 @@ local AUTO_YAW = {
 -- Used in BOTH Local View and Auto Yaw. Knife uses the pistol values.
 -- each entry: { left, right }; state index 1 Standing,2 Moving,3 Crouch,4 Air.
 local MANUAL = {
-	pistol = { { 100, -75 }, { 100, -80 }, { 111, 65 }, { 93, -78 } },
+	pistol = { { 100, -75 }, { 100, -80 }, { 111, -65 }, { 93, -78 } },
 	other  = { { 124, -52 }, { 117, -67 }, { 108, -70 }, { 120, -62 } },
 }
 
