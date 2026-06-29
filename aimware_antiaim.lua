@@ -37,7 +37,6 @@ local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
 local DUCK_COOLDOWN_TICKS = 96 -- ~1.5s re-crouch after a shot (64 tick)
-local NOFIRE_STAND_TICKS  = 13 -- ~200ms: target shown but not firing -> stand
 
 local SWITCH_JITTER_AMOUNT = 30 -- deg shake right after a manual switch
 local SWITCH_JITTER_TICKS  = 2  -- how long the shake lasts
@@ -246,8 +245,6 @@ local duck_can_peek = false -- Duck Peek: enemy in view (computed in Draw)
 local duck_active   = false -- Duck Peek: bind held
 local duck_cd_until = 0     -- Duck Peek: re-crouch until this tick after a shot
 local duck_fire_tick = -1000 -- Duck Peek: last tick we fired a shot
-local duck_seen_since = 0   -- Duck Peek: tick the target became visible
-local duck_prev_seen = false -- Duck Peek: previous frame's visibility
 local duck_prev_wt = -2     -- Duck Peek: previous weapon type (switch detect)
 local duck_prev_ground = true -- Duck Peek: previous on-ground state (land detect)
 local vm_cur_x, vm_cur_y, vm_cur_z = 0, 0, 0 -- Viewmodel: smoothed offset
@@ -438,35 +435,45 @@ local function force_duck(cmd)
 	if not ok then pcall(function() cmd.in_duck = true end) end
 end
 
--- is a live enemy on screen (in front of you) within a centred FOV box and
--- `range` units? used by Duck Peek Auto to decide when to stand up. We use the
--- actual screen projection instead of raw angles - reliable and FOV-correct.
-local function enemy_in_view(lp, fov, range)
-	local my = origin_of(lp)
-	if not my then return false end
+-- Shadow-style duck peek check: trace a line from our STANDING eye position to
+-- an enemy's hitboxes. if the line reaches the enemy (not blocked by world /
+-- another player) then we'd have a clear shot from standing -> stand up to peek.
+-- otherwise something's in the way from up there, so stay crouched.
+local STAND_EYE_Z = 64        -- standing view height (origin + 64)
+local DUCK_BONES  = { 0, 2, 4, 6 } -- head, chest, stomach, pelvis
+
+local function same_entity(a, b)
+	if a == b then return true end
+	local ia, ib
+	pcall(function() ia = a:GetIndex() end)
+	pcall(function() ib = b:GetIndex() end)
+	return ia ~= nil and ia == ib
+end
+
+local function enemy_hittable_standing(lp)
+	local o = origin_of(lp)
+	if not o then return false end
+	local from
+	pcall(function() from = Vector3(o.x, o.y, o.z + STAND_EYE_Z) end)
+	if not from then return false end
 	local myteam = field_int(lp, "m_iTeamNum")
-	local range2 = (range > 0) and (range * range) or nil
-	local sx, sy
-	pcall(function() sx, sy = draw.GetScreenSize() end)
-	if not sx or not sy then sx, sy = 1920, 1080 end
-	local cx, cy = sx / 2, sy / 2
-	local frac = math.max(1, fov) / 180 -- fov 180 = whole screen, 30 = centre
-	local hx, hy = (sx / 2) * frac, (sy / 2) * frac
-	for i = 1, #esp_targets do
-		local e = esp_targets[i]
+	local list = {}
+	pcall(function() list = entities.FindByClass("C_CSPlayerPawn") or {} end)
+	for i = 1, #list do
+		local e = list[i]
 		if e ~= lp and is_live_player(e) then
 			local t = field_int(e, "m_iTeamNum")
 			if not (myteam ~= 0 and t ~= 0 and t == myteam) then
-				local p = origin_of(e)
-				if p then
-					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
-					if not range2 or d2 <= range2 then
-						local px, py
-						pcall(function() px, py = client.WorldToScreen(p) end)
-						-- valid (in front) and inside the FOV box around the centre
-						if px and py and px == px and py == py
-							and math.abs(px - cx) <= hx and math.abs(py - cy) <= hy then
-							return true
+				for _, hb in ipairs(DUCK_BONES) do
+					local pos
+					pcall(function() pos = e:GetHitboxPosition(hb) end)
+					if pos then
+						local tr
+						pcall(function() tr = engine.TraceLine(from, pos) end)
+						if tr then
+							local clear = (tr.fraction and tr.fraction >= 0.97)
+								or (tr.entity and same_entity(tr.entity, e))
+							if clear then return true end
 						end
 					end
 				end
@@ -502,12 +509,10 @@ local function pre_move(cmd)
 	end
 
 	if duck_active then
-		local now    = globals.TickCount()
-		local in_cd  = now < duck_cd_until
-		local seen   = duck_can_peek and (now - duck_seen_since >= NOFIRE_STAND_TICKS)
-		local nofire = (now - duck_fire_tick >= NOFIRE_STAND_TICKS)
-		local want_stand = duck_can_peek and seen and nofire and not in_cd
-		if not want_stand then force_duck(cmd) end
+		-- stand only when a clear shot exists from standing (computed in Draw via
+		-- TraceLine) and we're not in the post-shot / switch / landing cooldown.
+		local in_cd = globals.TickCount() < duck_cd_until
+		if not (duck_can_peek and not in_cd) then force_duck(cmd) end
 	end
 
 	if not g.master:GetValue() then return end
@@ -669,12 +674,10 @@ local function on_draw()
 	local dlp = entities.GetLocalPlayer()
 	local alive = false
 	if dlp then pcall(function() alive = dlp:IsAlive() end) end
-	-- never peek/stand with a knife out - stay crouched
+	-- never peek/stand with a knife out - stay crouched. otherwise stand when a
+	-- LOS trace from standing reaches a live enemy (clear shot from up there).
 	duck_can_peek = alive and weapon_class(dlp) ~= "knife"
-		and enemy_in_view(dlp, 180, 0)
-	-- remember when the target first appeared (for the ~200ms "not firing" rule)
-	if duck_can_peek and not duck_prev_seen then duck_seen_since = globals.TickCount() end
-	duck_prev_seen = duck_can_peek
+		and enemy_hittable_standing(dlp)
 
 	if not g.master:GetValue() then return end
 
