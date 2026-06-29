@@ -11,11 +11,11 @@ local TAB  = gui.Reference("Ragebot", "Anti-Aim")
 local TAB2 = gui.Reference("Ragebot", "Auto Peek")
 -- extra duck peek assist keybox lives in Ragebot > Main
 local TABM = gui.Reference("Ragebot", "Main")
--- viewmodel offset sliders live in Visuals > World (the Camera section). fall
--- back to Ragebot > Main if that reference name differs in this build.
-local TABW
-pcall(function() TABW = gui.Reference("Visuals", "World") end)
-local VMTAB = TABW or TABM
+-- viewmodel offset sliders live in World > Camera. fall back to Ragebot > Main
+-- if that reference name differs in this build.
+local TABM1
+pcall(function() TABM1 = gui.Reference("World", "Camera") end)
+local VMTAB = TABM1 or TABM
 
 -- ============================================================
 -- constants
@@ -250,6 +250,7 @@ local duck_seen_since = 0   -- Duck Peek: tick the target became visible
 local duck_prev_seen = false -- Duck Peek: previous frame's visibility
 local duck_prev_wt = -2     -- Duck Peek: previous weapon type (switch detect)
 local duck_prev_ground = true -- Duck Peek: previous on-ground state (land detect)
+local vm_cur_x, vm_cur_y, vm_cur_z = 0, 0, 0 -- Viewmodel: smoothed offset
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -638,8 +639,14 @@ local function handle_forward()
 end
 
 local function on_draw()
-	-- push the viewmodel offset into the femka-style hook every frame
-	VM.set(true, g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue())
+	-- smoothly ease the viewmodel offset toward the slider targets, then push
+	-- it into the femka-style hook every frame
+	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
+	local s = 0.15 -- smoothing factor per frame
+	vm_cur_x = vm_cur_x + (tx - vm_cur_x) * s
+	vm_cur_y = vm_cur_y + (ty - vm_cur_y) * s
+	vm_cur_z = vm_cur_z + (tz - vm_cur_z) * s
+	VM.set(true, vm_cur_x, vm_cur_y, vm_cur_z)
 
 	local m = g.modifier:GetValue()
 	g.mod_left:SetInvisible(m ~= 1)
