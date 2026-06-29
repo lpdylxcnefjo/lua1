@@ -512,7 +512,9 @@ local function on_draw()
 	local dlp = entities.GetLocalPlayer()
 	local alive = false
 	if dlp then pcall(function() alive = dlp:IsAlive() end) end
-	duck_can_peek = alive and enemy_in_view(dlp, 180, 0)
+	-- never peek/stand with a knife out - stay crouched
+	duck_can_peek = alive and weapon_class(dlp) ~= "knife"
+		and enemy_in_view(dlp, 180, 0)
 
 	if not g.master:GetValue() then return end
 
