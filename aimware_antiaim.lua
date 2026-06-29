@@ -1,7 +1,8 @@
 -- Aimware CS2 - Anti-Aim Builder
 -- Yaw Base:
---   Local View - manual builder, per weapon-group x per movement state.
+--   Local View - yaw stays around the local view, shaped by Offset + Modifier.
 --   Auto Yaw   - built-in tuned values per weapon class + movement state.
+-- Yaw Offset shifts the base yaw; Modifier adds a jitter pattern on top.
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
@@ -10,9 +11,7 @@ local TAB = gui.Reference("Ragebot", "Anti-Aim")
 -- ============================================================
 -- constants
 -- ============================================================
-local GROUPS    = { "Pistols", "Heavy Pistols", "Rifles & Snipers" }
-local STATES    = { "Standing", "Moving", "Crouched", "In Air" }
-local YAW_MODES = { "Disabled", "Static", "Jitter", "Spin" }
+local STATES = { "Standing", "Moving", "Crouched", "In Air" }
 
 local IN_ATTACK   = bit.lshift(1, 0)
 local IN_FORWARD  = bit.lshift(1, 3)
@@ -53,34 +52,17 @@ local g = {}
 
 g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
 g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw")
-g.egroup = gui.Combobox(TAB, "aa_egroup", "Edit Group", unpack(GROUPS))
-g.estate = gui.Combobox(TAB, "aa_estate", "Edit State", unpack(STATES))
 
--- Auto Yaw tuning (shown only when Yaw Base = Auto Yaw)
-g.auto_offset     = gui.Slider  (TAB, "aa_auto_offset", "Auto Yaw: Offset", 0, -180, 180, 0.1)
-g.auto_jitter     = gui.Checkbox(TAB, "aa_auto_jitter", "Auto Yaw: Modifier Jitter", false)
-g.auto_jitter_amt = gui.Slider  (TAB, "aa_auto_jitamt", "Auto Yaw: Jitter Amount", 15, 0, 90, 0.1)
+-- yaw offset shifts the base yaw (0 = the base value itself)
+g.yaw_offset = gui.Slider(TAB, "aa_yaw_offset", "Yaw Offset", 0, -180, 180, 0.1)
 
--- manual builder: per group + per state controls (only the selected pair shown).
--- labels are prefixed with the group so display names stay unique across the tab.
-local st = {}
-for gi = 1, #GROUPS do
-	st[gi] = {}
-	local gkey = GROUPS[gi]:gsub("[%s&]", ""):lower()
-	for si = 1, #STATES do
-		local skey = STATES[si]:gsub("%s", ""):lower()
-		local p = "aa_" .. gkey .. "_" .. skey .. "_"
-		local label = GROUPS[gi] .. " " .. STATES[si] .. ": "
-		st[gi][si] = {
-			mode  = gui.Combobox(TAB, p .. "mode",  label .. "Mode", unpack(YAW_MODES)),
-			yaw   = gui.Slider  (TAB, p .. "yaw",   label .. "Yaw",          180, -180, 180, 0.1),
-			left  = gui.Slider  (TAB, p .. "left",  label .. "Left",          30, 0, 180, 0.1),
-			right = gui.Slider  (TAB, p .. "right", label .. "Right",         30, 0, 180, 0.1),
-			speed = gui.Slider  (TAB, p .. "speed", label .. "Jitter Speed",   4, 2, 32, 2),
-			spin  = gui.Slider  (TAB, p .. "spin",  label .. "Spin Speed",    -5, -45, 45, 0.1),
-		}
-	end
-end
+-- modifier: jitter pattern applied on top of the base yaw
+g.modifier   = gui.Combobox(TAB, "aa_modifier", "Modifier", "Center", "Offset", "3-Way", "5-Way", "Anti-Nixware")
+g.mod_left   = gui.Slider  (TAB, "aa_mod_left",   "Modifier Left",   0, 0, 180, 0.1)
+g.mod_right  = gui.Slider  (TAB, "aa_mod_right",  "Modifier Right",  0, 0, 180, 0.1)
+g.mod_offset = gui.Slider  (TAB, "aa_mod_offset", "Modifier Offset", 60, -180, 180, 0.1)
+g.mod_3way   = gui.Slider  (TAB, "aa_mod_3way",   "Modifier Range",  45, 0, 180, 0.1)
+g.mod_5way   = gui.Slider  (TAB, "aa_mod_5way",   "Modifier Range",  45, 0, 180, 0.1)
 
 -- pitch
 g.pitch       = gui.Combobox(TAB, "aa_pitch",       "Pitch", "Disabled", "Down", "Up", "Jitter", "Zero", "Fake Down", "Custom")
@@ -164,22 +146,28 @@ local function sweep_target(from, to)
 	return from + (to - fw) -- same side: direct
 end
 
--- manual-builder yaw offset (relative to base); nil = leave native yaw
-local function state_yaw(s, tick)
-	local mode = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
-	local center = s.yaw:GetValue()
-	if mode == 1 then
-		return center
-	elseif mode == 2 then
-		local l, r = s.left:GetValue(), s.right:GetValue()
-		if l == 0 and r == 0 then return center end
-		local speed = math.max(2, s.speed:GetValue())
-		local phase = math.floor(tick / (speed / 2)) % 2
-		return phase == 0 and (center - l) or (center + r)
-	elseif mode == 3 then
-		return center + (tick * s.spin:GetValue()) % 360
+-- modifier jitter offset (added on top of the base yaw)
+local function modifier_jitter(tick)
+	local m = g.modifier:GetValue() -- 0 Center,1 Offset,2 3-Way,3 5-Way,4 Anti-Nixware
+	if m == 0 then -- Center: alternate -left / +right each tick
+		return ((tick % 2) == 0) and -g.mod_left:GetValue() or g.mod_right:GetValue()
+	elseif m == 1 then -- Offset: alternate 0 / offset
+		return ((tick % 2) == 0) and 0 or g.mod_offset:GetValue()
+	elseif m == 2 then -- 3-Way: -a, 0, +a
+		local a = g.mod_3way:GetValue()
+		local p = tick % 3
+		if p == 0 then return -a elseif p == 1 then return 0 end
+		return a
+	elseif m == 3 then -- 5-Way: -a, -a/2, 0, a/2, a
+		local a = g.mod_5way:GetValue()
+		local p = tick % 5
+		if p == 0 then return -a
+		elseif p == 1 then return -a / 2
+		elseif p == 2 then return 0
+		elseif p == 3 then return a / 2 end
+		return a
 	end
-	return nil
+	return 0 -- Anti-Nixware (logic TBD)
 end
 
 -- ============================================================
@@ -203,7 +191,6 @@ local function pre_move(cmd)
 	local base   = pre_va.y -- local view
 	local state  = current_state(lp, cmd)
 	local wclass = weapon_class(lp)
-	local group  = (wclass == "pistol") and 1 or 3
 
 	-- target yaw offset for the active mode (manual offsets are tuned per weapon
 	-- and state; knife -> pistol)
@@ -215,20 +202,15 @@ local function pre_move(cmd)
 		goal = MANUAL[mcls][state][1] -- left
 	elseif manual == 3 then
 		goal = 0 -- forward
-	elseif g.base:GetValue() == 1 then
-		-- Auto Yaw: tuned value + manual offset (+ optional modifier jitter)
-		goal = AUTO_YAW[wclass][state] + g.auto_offset:GetValue()
-		if g.auto_jitter:GetValue() then
-			local a = g.auto_jitter_amt:GetValue()
-			goal = goal + (((tick % 2) == 0) and a or -a)
-		end
 	else
-		goal = state_yaw(st[group][state], tick) -- Local View builder (may be nil)
+		-- base yaw + offset + modifier jitter
+		local b = (g.base:GetValue() == 1) and AUTO_YAW[wclass][state] or 0
+		goal = b + g.yaw_offset:GetValue() + modifier_jitter(tick)
 	end
 
 	-- detect a manual switch: left<->right rotates through the back
 	if manual ~= prev_manual then
-		if (manual == 1 or manual == 2) and goal then
+		if manual == 1 or manual == 2 then
 			sweep_from  = cur_off
 			sweep_to    = sweep_target(cur_off, goal)
 			sweep_start = tick
@@ -237,18 +219,13 @@ local function pre_move(cmd)
 		prev_manual = manual
 	end
 
-	if goal == nil then
-		va.y   = pre_va.y -- builder disabled: leave native yaw
-		cur_off = 0
+	if (manual == 1 or manual == 2) and (tick - sweep_start) < SWEEP_TICKS then
+		local p = (tick - sweep_start) / SWEEP_TICKS
+		cur_off = sweep_from + (sweep_to - sweep_from) * p
 	else
-		if (manual == 1 or manual == 2) and (tick - sweep_start) < SWEEP_TICKS then
-			local p = (tick - sweep_start) / SWEEP_TICKS
-			cur_off = sweep_from + (sweep_to - sweep_from) * p
-		else
-			cur_off = cur_off + wrap180(goal - cur_off) -- track shortest
-		end
-		va.y = base + cur_off
+		cur_off = cur_off + wrap180(goal - cur_off) -- track shortest
 	end
+	va.y = base + cur_off
 
 	-- brief shake right after switching a manual direction
 	if manual ~= 0 and g.switch_jitter:GetValue()
@@ -304,29 +281,12 @@ end
 local screen_x, screen_y = draw.GetScreenSize()
 
 local function on_draw()
-	-- manual builder controls only matter in Local View
-	local manual_mode = g.base:GetValue() == 0
-	local sg = g.egroup:GetValue() + 1
-	local ss = g.estate:GetValue() + 1
-	g.egroup:SetInvisible(not manual_mode)
-	g.estate:SetInvisible(not manual_mode)
-	for gi = 1, #GROUPS do
-		for si = 1, #STATES do
-			local s = st[gi][si]
-			local shown = manual_mode and (gi == sg and si == ss)
-			local mode  = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
-			s.mode:SetInvisible(not shown)
-			s.yaw:SetInvisible(not (shown and mode ~= 0))
-			s.left:SetInvisible(not (shown and mode == 2))
-			s.right:SetInvisible(not (shown and mode == 2))
-			s.speed:SetInvisible(not (shown and mode == 2))
-			s.spin:SetInvisible(not (shown and mode == 3))
-		end
-	end
-	local auto_mode = g.base:GetValue() == 1
-	g.auto_offset:SetInvisible(not auto_mode)
-	g.auto_jitter:SetInvisible(not auto_mode)
-	g.auto_jitter_amt:SetInvisible(not (auto_mode and g.auto_jitter:GetValue()))
+	local m = g.modifier:GetValue()
+	g.mod_left:SetInvisible(m ~= 0)
+	g.mod_right:SetInvisible(m ~= 0)
+	g.mod_offset:SetInvisible(m ~= 1)
+	g.mod_3way:SetInvisible(m ~= 2)
+	g.mod_5way:SetInvisible(m ~= 3)
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
 	if not g.master:GetValue() then return end
