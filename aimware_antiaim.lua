@@ -137,53 +137,59 @@ local function current_state(lp, cmd)
 	return 1 -- Standing
 end
 
--- is this entity a valid, alive enemy with a real world position?
-local function valid_enemy(e, lp, my, myteam)
-	if e == lp then return false end
-	local alive = false
-	pcall(function() alive = e:IsAlive() end)
-	if not alive then return false end
-	-- must have health (filters dead bodies / non-player junk)
-	if field_int(e, "m_iHealth") <= 0 then return false end
-	-- skip dormant entities (their position is stale/zero)
-	local dormant = false
-	pcall(function() dormant = e:IsDormant() end)
-	if dormant then return false end
-	-- enemy team only (when team is readable)
-	local t = field_int(e, "m_iTeamNum")
-	if myteam ~= 0 and t ~= 0 and t == myteam then return false end
-	-- must have a real origin (controllers / invalid sit at 0,0,0)
-	local okp, p = pcall(function() return e:GetAbsOrigin() end)
-	if not okp or not p then return false end
-	local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
-	if (p.x == 0 and p.y == 0 and p.z == 0) or d2 < 1 then return false end
-	return d2
+-- The cheat calls DrawESP for every player it actually recognizes/draws (i.e.
+-- the players you'd see in the scoreboard). We collect those entities each
+-- frame and use them as the target source - far more reliable than guessing
+-- entity classes / alive flags ourselves.
+local esp_targets = {} -- { ent, ... } rebuilt every ESP pass
+local esp_frame   = {} -- staging for the current pass
+local esp_last_tick = -1
+
+local function on_draw_esp(builder)
+	local ok, e = pcall(function() return builder:GetEntity() end)
+	if not ok or not e then return end
+	local t = globals.TickCount()
+	if t ~= esp_last_tick then -- new frame -> publish previous pass, start fresh
+		esp_targets = esp_frame
+		esp_frame = {}
+		esp_last_tick = t
+	end
+	esp_frame[#esp_frame + 1] = e
 end
 
--- yaw that points at the nearest alive enemy (nil if none found)
+-- pull origin as plain numbers (nil if unavailable / at world origin)
+local function origin_of(e)
+	local ok, p = pcall(function() return e:GetAbsOrigin() end)
+	if not ok or not p then return nil end
+	if p.x == 0 and p.y == 0 and p.z == 0 then return nil end
+	return p
+end
+
+-- yaw that points at the nearest live enemy from the ESP list (nil if none)
 local function target_yaw(lp)
-	local best, best_d
-	local my = lp:GetAbsOrigin()
+	local my = origin_of(lp)
+	if not my then return nil end
 	local myteam = field_int(lp, "m_iTeamNum")
-	for _, cls in ipairs({ "CCSPlayer", "C_CSPlayerPawn", "CCSPlayerPawn" }) do
-		local ok, list = pcall(function() return entities.FindByClass(cls) end)
-		if ok and list then
-			for i = 1, #list do
-				local e = list[i]
-				local d = valid_enemy(e, lp, my, myteam)
-				if d and (not best_d or d < best_d) then
-					best, best_d = e, d
+	local best, best_d
+	for i = 1, #esp_targets do
+		local e = esp_targets[i]
+		if e ~= lp then
+			-- enemy team only when team is actually readable
+			local t = field_int(e, "m_iTeamNum")
+			if not (myteam ~= 0 and t ~= 0 and t == myteam) then
+				local p = origin_of(e)
+				if p then
+					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
+					if d2 > 1 and (not best_d or d2 < best_d) then
+						best, best_d = p, d2
+					end
 				end
 			end
-			if best then break end
 		end
 	end
 	if not best then return nil end
 	local ya
-	local ok = pcall(function()
-		local dir = best:GetAbsOrigin() - my
-		ya = dir:Angles().y
-	end)
+	local ok = pcall(function() ya = (best - my):Angles().y end)
 	if ok and ya then return ya end
 	return nil
 end
@@ -404,7 +410,8 @@ local function on_draw()
 		draw.TextShadow(cx - 60, cy + 46, "DIR: " .. dir)
 		draw.TextShadow(cx - 60, cy + 61, string.format("YAW: %.1f", cur_yaw))
 		if bm == 1 then
-			draw.TextShadow(cx - 60, cy + 76, "TARGET: " .. (cur_target and "YES" or "NONE"))
+			draw.TextShadow(cx - 60, cy + 76, string.format("TARGET: %s (%d)",
+				cur_target and "YES" or "NONE", #esp_targets))
 		end
 	end
 end
@@ -414,3 +421,4 @@ end
 -- ============================================================
 callbacks.Register("PreMove", "aa_premove", pre_move)
 callbacks.Register("Draw", "aa_draw", on_draw)
+callbacks.Register("DrawESP", "aa_esp", on_draw_esp)
