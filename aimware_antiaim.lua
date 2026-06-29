@@ -59,7 +59,9 @@ for gi = 1, #GROUPS do
 	for si = 1, #STATES do
 		local skey = STATES[si]:gsub("%s", ""):lower()
 		local p = "aa_" .. gkey .. "_" .. skey .. "_"
-		local label = STATES[si] .. ": "
+		-- labels must be unique across the whole tab (duplicate display names
+		-- break GetValue / SetInvisible targeting), so prefix with the group.
+		local label = GROUPS[gi] .. " " .. STATES[si] .. ": "
 		st[gi][si] = {
 			mode  = gui.Combobox(TAB, p .. "mode",  label .. "Mode", unpack(YAW_MODES)),
 			yaw   = gui.Slider  (TAB, p .. "yaw",   label .. "Yaw",          180, -180, 180, 0.1),
