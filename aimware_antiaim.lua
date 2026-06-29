@@ -319,10 +319,12 @@ local function pre_move(cmd)
 	elseif manual == 3 then
 		goal = 0 -- forward
 	else
-		-- Auto Yaw is always on: tuned per-weapon/state value scaled by the pitch
-		-- factor (full down = full value, level/up = straight) + Yaw Offset +
-		-- Modifier jitter, built on the chosen base reference.
-		goal = AUTO_YAW[wclass][state] * pfactor + g.yaw_offset:GetValue() + modifier_jitter(tick)
+		-- Auto Yaw is always on. Pitch blends the yaw: full down = tuned
+		-- per-weapon/state value, level/up = straight back (+/-180). + Yaw
+		-- Offset + Modifier jitter, built on the chosen base reference.
+		local av   = AUTO_YAW[wclass][state]
+		local back = (av < 0) and -180 or 180
+		goal = back + (av - back) * pfactor + g.yaw_offset:GetValue() + modifier_jitter(tick)
 	end
 
 	-- detect a manual switch: left<->right rotates through the back
