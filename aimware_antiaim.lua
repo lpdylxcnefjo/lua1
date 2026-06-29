@@ -16,6 +16,7 @@ local TAB2 = gui.Reference("Ragebot", "Auto Peek")
 local STATES = { "Standing", "Moving", "Crouched", "In Air" }
 
 local IN_ATTACK   = bit.lshift(1, 0)
+local IN_DUCK     = bit.lshift(1, 1)
 local IN_FORWARD  = bit.lshift(1, 3)
 local IN_BACK     = bit.lshift(1, 4)
 local ON_USE      = bit.lshift(1, 5)
@@ -78,6 +79,9 @@ g.key_right   = gui.Keybox(TAB2, "aa_key_right",   "Manual Right",   0)
 g.key_left    = gui.Keybox(TAB2, "aa_key_left",    "Manual Left",    0)
 g.key_forward = gui.Keybox(TAB2, "aa_key_forward", "Manual Forward", 0)
 g.fwd_mode    = gui.Combobox(TAB2, "aa_fwd_mode",   "Forward: Mode", "Toggle", "Hold")
+
+-- duck peek assist: force crouch while held (own bind, native one doesn't work)
+g.duck_peek   = gui.Keybox(TAB2, "aa_duck_peek", "Duck Peek Assist", 0)
 
 -- brief jitter at the moment a manual direction is switched
 g.switch_jitter = gui.Checkbox(TAB2, "aa_switch_jitter", "Manual Switch Jitter", true)
@@ -271,8 +275,22 @@ end
 -- ============================================================
 -- main anti-aim
 -- ============================================================
+-- force crouch (try the method API, fall back to the field API)
+local function force_duck(cmd)
+	local ok = pcall(function()
+		local b = cmd:GetButtons()
+		if bit.band(b, IN_DUCK) == 0 then cmd:SetButtons(b + IN_DUCK) end
+	end)
+	if not ok then pcall(function() cmd.in_duck = true end) end
+end
+
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
+
+	-- duck peek assist runs independently of the AA builder
+	local dk = g.duck_peek:GetValue()
+	if dk ~= 0 and input.IsButtonDown(dk) then force_duck(cmd) end
+
 	if not g.master:GetValue() then return end
 
 	local lp = entities.GetLocalPlayer()
