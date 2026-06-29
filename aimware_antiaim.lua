@@ -145,40 +145,72 @@ local function origin_of(e)
 	return p
 end
 
-local target_count = 0 -- live enemies considered last pass (for the indicator)
+-- The cheat calls DrawESP for every player it draws (the actual players in this
+-- build - FindByClass("CCSPlayer") returns nothing here). We collect those
+-- entities each ESP pass and target from them. Weapons are filtered out by
+-- requiring health, and we cache the last enemy so turning away (which stops
+-- the ESP draw for that player) doesn't instantly drop the target.
+local TARGET_HOLD_TICKS = 128 -- keep last target this long after it leaves ESP
+local esp_targets   = {} -- entities from the last completed ESP pass
+local esp_frame     = {} -- staging for the current pass
+local esp_last_tick = -1
+local last_target   = nil -- remembered enemy entity
+local last_target_t = -1000
+local target_count  = 0  -- live enemies seen last pass (for the indicator)
 
--- yaw that points at the nearest live enemy player (nil if none). enumerates
--- only CCSPlayer (players, not dropped weapons), like the API ESP example.
+local function is_live_player(e)
+	local alive = false
+	pcall(function() alive = e:IsAlive() end)
+	if not alive and field_int(e, "m_iHealth") <= 0 then return false end
+	-- players have health; dropped weapons / props don't
+	if field_int(e, "m_iHealth") <= 0 then return false end
+	return true
+end
+
+local function on_draw_esp(builder)
+	local ok, e = pcall(function() return builder:GetEntity() end)
+	if not ok or not e then return end
+	local t = globals.TickCount()
+	if t ~= esp_last_tick then -- new frame -> publish previous pass, start fresh
+		esp_targets = esp_frame
+		esp_frame = {}
+		esp_last_tick = t
+	end
+	esp_frame[#esp_frame + 1] = e
+end
+
+-- yaw that points at the nearest live enemy player (nil if none found / cached)
 local function target_yaw(lp)
 	local my = origin_of(lp)
 	if not my then return nil end
 	local myteam = field_int(lp, "m_iTeamNum")
-	local best, best_d
+	local now = globals.TickCount()
+	local best_e, best_p, best_d
 	target_count = 0
-	local ok, list = pcall(function() return entities.FindByClass("CCSPlayer") end)
-	if ok and list then
-		for i = 1, #list do
-			local e = list[i]
-			if e ~= lp then
-				local alive = false
-				pcall(function() alive = e:IsAlive() end)
-				local t = field_int(e, "m_iTeamNum")
-				local enemy = not (myteam ~= 0 and t ~= 0 and t == myteam)
-				local p = alive and enemy and origin_of(e) or nil
-				if p then
-					target_count = target_count + 1
-					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
-					if d2 > 1 and (not best_d or d2 < best_d) then
-						best, best_d = p, d2
-					end
+	for i = 1, #esp_targets do
+		local e = esp_targets[i]
+		if e ~= lp and is_live_player(e) then
+			local t = field_int(e, "m_iTeamNum")
+			local enemy = not (myteam ~= 0 and t ~= 0 and t == myteam)
+			local p = enemy and origin_of(e) or nil
+			if p then
+				target_count = target_count + 1
+				local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
+				if d2 > 1 and (not best_d or d2 < best_d) then
+					best_e, best_p, best_d = e, p, d2
 				end
 			end
 		end
 	end
-	if not best then return nil end
+	-- nothing visible this pass: fall back to the last enemy for a short while
+	if not best_p and last_target and (now - last_target_t) <= TARGET_HOLD_TICKS then
+		best_p = origin_of(last_target)
+	end
+	if best_e then last_target = best_e; last_target_t = now end
+	if not best_p then return nil end
 	local ya
-	local ok2 = pcall(function() ya = (best - my):Angles().y end)
-	if ok2 and ya then return ya end
+	local ok = pcall(function() ya = (best_p - my):Angles().y end)
+	if ok and ya then return ya end
 	return nil
 end
 
@@ -409,3 +441,4 @@ end
 -- ============================================================
 callbacks.Register("PreMove", "aa_premove", pre_move)
 callbacks.Register("Draw", "aa_draw", on_draw)
+callbacks.Register("DrawESP", "aa_esp", on_draw_esp)
