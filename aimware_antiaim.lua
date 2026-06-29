@@ -1,6 +1,7 @@
 -- Aimware CS2 - Anti-Aim Builder
--- Per-state anti-aim (Standing / Moving / Crouched / In Air), yaw modes, pitch,
--- manual directions, conditions, on-screen indicator.
+-- Per weapon-group (Pistols / Heavy Pistols / Rifles & Snipers) and per movement
+-- state (Standing / Moving / Crouched / In Air) yaw config, plus pitch, manual
+-- directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
 local TAB = gui.Reference("Ragebot", "Anti-Aim")
@@ -8,8 +9,10 @@ local TAB = gui.Reference("Ragebot", "Anti-Aim")
 -- ============================================================
 -- constants
 -- ============================================================
-local STATES      = { "Standing", "Moving", "Crouched", "In Air" }
-local YAW_MODES   = { "Disabled", "Static", "Jitter", "Spin" }
+local GROUPS    = { "Pistols", "Heavy Pistols", "Rifles & Snipers" }
+local STATES    = { "Standing", "Moving", "Crouched", "In Air" }
+local YAW_MODES = { "Disabled", "Static", "Jitter", "Spin" }
+
 local IN_ATTACK   = bit.lshift(1, 0)
 local IN_FORWARD  = bit.lshift(1, 3)
 local IN_BACK     = bit.lshift(1, 4)
@@ -22,27 +25,50 @@ local FL_DUCKING  = bit.lshift(1, 1)
 local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
+-- ====== weapon -> group mapping (EDIT ME) ===================
+-- GetWeaponType() category ints (CS standard): 0 knife, 1 pistol, 2 smg,
+-- 3 rifle, 4 shotgun, 5 sniper, 6 machinegun, 7 c4, 9 grenade.
+-- Heavy pistols (Deagle / R8) share category 1 with light pistols and need the
+-- specific weapon id to separate -- left to fill once that accessor is known.
+local TYPE_TO_GROUP = {
+	[1] = 1, -- pistols
+	[2] = 3, -- smg     -> rifles & snipers
+	[3] = 3, -- rifle   -> rifles & snipers
+	[4] = 3, -- shotgun -> rifles & snipers
+	[5] = 3, -- sniper  -> rifles & snipers
+	[6] = 3, -- mg      -> rifles & snipers
+}
+-- specific weapon ids that should map to "Heavy Pistols" (fill when known)
+local HEAVY_PISTOL_IDS = { --[[ [1] = true, [64] = true ]] }
+
 -- ============================================================
 -- GUI
 -- ============================================================
 local g = {}
 
 g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
-g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Crosshair", "At Target")
-g.edit   = gui.Combobox(TAB, "aa_edit",   "Edit State", unpack(STATES))
+g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "At Target", "Auto Yaw")
+g.egroup = gui.Combobox(TAB, "aa_egroup", "Edit Group", unpack(GROUPS))
+g.estate = gui.Combobox(TAB, "aa_estate", "Edit State", unpack(STATES))
 
--- per-state yaw controls (only the selected state's relevant controls are shown)
+-- per group + per state yaw controls (only the selected pair is shown)
 local st = {}
-for i = 1, #STATES do
-	local key = STATES[i]:gsub("%s", ""):lower()
-	st[i] = {
-		mode  = gui.Combobox(TAB, "aa_" .. key .. "_mode",  STATES[i] .. ": Mode", unpack(YAW_MODES)),
-		yaw   = gui.Slider  (TAB, "aa_" .. key .. "_yaw",   STATES[i] .. ": Yaw",    180, -180, 180, 0.1),
-		left  = gui.Slider  (TAB, "aa_" .. key .. "_left",  STATES[i] .. ": Left",   30, 0, 180, 0.1),
-		right = gui.Slider  (TAB, "aa_" .. key .. "_right", STATES[i] .. ": Right",  30, 0, 180, 0.1),
-		speed = gui.Slider  (TAB, "aa_" .. key .. "_speed", STATES[i] .. ": Jitter Speed", 4, 2, 32, 2),
-		spin  = gui.Slider  (TAB, "aa_" .. key .. "_spin",  STATES[i] .. ": Spin Speed", -5, -45, 45, 0.1),
-	}
+for gi = 1, #GROUPS do
+	st[gi] = {}
+	local gkey = GROUPS[gi]:gsub("[%s&]", ""):lower()
+	for si = 1, #STATES do
+		local skey = STATES[si]:gsub("%s", ""):lower()
+		local p = "aa_" .. gkey .. "_" .. skey .. "_"
+		local label = STATES[si] .. ": "
+		st[gi][si] = {
+			mode  = gui.Combobox(TAB, p .. "mode",  label .. "Mode", unpack(YAW_MODES)),
+			yaw   = gui.Slider  (TAB, p .. "yaw",   label .. "Yaw",          180, -180, 180, 0.1),
+			left  = gui.Slider  (TAB, p .. "left",  label .. "Left",          30, 0, 180, 0.1),
+			right = gui.Slider  (TAB, p .. "right", label .. "Right",         30, 0, 180, 0.1),
+			speed = gui.Slider  (TAB, p .. "speed", label .. "Jitter Speed",   4, 2, 32, 2),
+			spin  = gui.Slider  (TAB, p .. "spin",  label .. "Spin Speed",    -5, -45, 45, 0.1),
+		}
+	end
 end
 
 -- pitch
@@ -68,6 +94,7 @@ g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true
 local pre_va = EulerAngles(0, 0, 0)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 back, 4 forward
 local cur_state_name = "Standing"
+local cur_group_name = "Pistols"
 local cur_yaw = 0
 local cur_target = false
 
@@ -107,6 +134,16 @@ local function target_yaw(lp)
 		end
 	end)
 	return best_enemy or best_any
+end
+
+local function weapon_group(lp)
+	local wt = 1
+	pcall(function() wt = lp:GetWeaponType() end)
+	if wt == 1 then
+		-- heavy pistol separation needs the specific weapon id (see above)
+		return 1
+	end
+	return TYPE_TO_GROUP[wt] or 3
 end
 
 local function current_state(lp, cmd)
@@ -156,18 +193,21 @@ local function pre_move(cmd)
 	if g.disable_shot:GetValue() and bit.band(buttons, IN_ATTACK) ~= 0 then return end
 
 	-- base yaw
+	local base_mode = g.base:GetValue() -- 0 Local View, 1 At Target, 2 Auto Yaw
 	local base
-	if g.base:GetValue() == 1 then
+	if base_mode == 1 then
 		local ty = target_yaw(lp)
 		cur_target = ty ~= nil
 		base = ty or (pre_va.y + 180)
 	else
 		cur_target = false
-		base = pre_va.y
+		base = pre_va.y -- Local View / Auto Yaw both build off local view
 	end
 
-	local va   = cmd:GetViewAngles()
-	local tick = globals.TickCount()
+	local va    = cmd:GetViewAngles()
+	local tick  = globals.TickCount()
+	local group = weapon_group(lp)
+	local state = current_state(lp, cmd)
 
 	-- yaw: manual override takes precedence over the per-state mode
 	if manual == 1 then
@@ -179,8 +219,7 @@ local function pre_move(cmd)
 	elseif manual == 4 then
 		va.y = base
 	else
-		local s = st[current_state(lp, cmd)]
-		local off = state_yaw(s, tick)
+		local off = state_yaw(st[group][state], tick)
 		if off == nil then
 			va.y = pre_va.y -- mode Disabled: leave native yaw untouched
 		else
@@ -211,7 +250,8 @@ local function pre_move(cmd)
 	end
 	va.z = 0
 
-	cur_state_name = STATES[current_state(lp, cmd)]
+	cur_group_name = GROUPS[group]
+	cur_state_name = STATES[state]
 	cur_yaw = va.y
 	cmd:SetViewAngles(va)
 end
@@ -229,18 +269,21 @@ end
 local screen_x, screen_y = draw.GetScreenSize()
 
 local function on_draw()
-	-- show only the selected state's controls, and only the ones its mode uses
-	local sel = g.edit:GetValue() + 1
-	for i = 1, #STATES do
-		local s = st[i]
-		local shown = (i == sel)
-		local mode  = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
-		s.mode:SetInvisible(not shown)
-		s.yaw:SetInvisible(not (shown and mode ~= 0))
-		s.left:SetInvisible(not (shown and mode == 2))
-		s.right:SetInvisible(not (shown and mode == 2))
-		s.speed:SetInvisible(not (shown and mode == 2))
-		s.spin:SetInvisible(not (shown and mode == 3))
+	-- show only the selected group+state controls, and only the ones its mode uses
+	local sg = g.egroup:GetValue() + 1
+	local ss = g.estate:GetValue() + 1
+	for gi = 1, #GROUPS do
+		for si = 1, #STATES do
+			local s = st[gi][si]
+			local shown = (gi == sg and si == ss)
+			local mode  = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
+			s.mode:SetInvisible(not shown)
+			s.yaw:SetInvisible(not (shown and mode ~= 0))
+			s.left:SetInvisible(not (shown and mode == 2))
+			s.right:SetInvisible(not (shown and mode == 2))
+			s.speed:SetInvisible(not (shown and mode == 2))
+			s.spin:SetInvisible(not (shown and mode == 3))
+		end
 	end
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
@@ -261,11 +304,12 @@ local function on_draw()
 		elseif manual == 3 then dir = "BACK"
 		elseif manual == 4 then dir = "FORWARD" end
 		draw.Color(120, 200, 255, 255)
-		draw.TextShadow(cx - 60, cy + 16, "AA: " .. cur_state_name)
-		draw.TextShadow(cx - 60, cy + 31, "DIR: " .. dir)
-		draw.TextShadow(cx - 60, cy + 46, string.format("YAW: %.1f", cur_yaw))
+		draw.TextShadow(cx - 60, cy + 16, "AA: " .. cur_group_name)
+		draw.TextShadow(cx - 60, cy + 31, "STATE: " .. cur_state_name)
+		draw.TextShadow(cx - 60, cy + 46, "DIR: " .. dir)
+		draw.TextShadow(cx - 60, cy + 61, string.format("YAW: %.1f", cur_yaw))
 		if g.base:GetValue() == 1 then
-			draw.TextShadow(cx - 60, cy + 61, "TARGET: " .. (cur_target and "YES" or "NONE"))
+			draw.TextShadow(cx - 60, cy + 76, "TARGET: " .. (cur_target and "YES" or "NONE"))
 		end
 	end
 end
