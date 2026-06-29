@@ -32,6 +32,7 @@ local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
 local DUCK_COOLDOWN_TICKS = 96 -- ~1.5s re-crouch after a shot (64 tick)
+local NOFIRE_STAND_TICKS  = 13 -- ~200ms: target shown but not firing -> stand
 
 local SWITCH_JITTER_AMOUNT = 30 -- deg shake right after a manual switch
 local SWITCH_JITTER_TICKS  = 2  -- how long the shake lasts
@@ -126,6 +127,9 @@ local pre_va = EulerAngles(0, 0, 0)
 local duck_can_peek = false -- Duck Peek: enemy in view (computed in Draw)
 local duck_active   = false -- Duck Peek: bind held
 local duck_cd_until = 0     -- Duck Peek: re-crouch until this tick after a shot
+local duck_fire_tick = -1000 -- Duck Peek: last tick we fired a shot
+local duck_seen_since = 0   -- Duck Peek: tick the target became visible
+local duck_prev_seen = false -- Duck Peek: previous frame's visibility
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -354,16 +358,17 @@ end
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist (bind held). while active: stay crouched and crawl when
-	-- you're moving (no need to stand in the open); only stand to peek when you
-	-- stop (parked behind cover) AND an enemy is on screen. After a shot we
-	-- re-crouch and wait ~1.5s. Independent of the AA builder.
+	-- duck peek assist (bind held). stay crouched, and only stand to peek when
+	-- the cheat sees a target (enemy on screen) but we haven't been able to fire
+	-- for ~200ms - i.e. something is blocking the shot from the crouch. while
+	-- we're actively firing (hitting from the crouch) we stay down. After a shot
+	-- we re-crouch ~1.5s. Independent of the AA builder.
 	if duck_active then
-		local in_cd = globals.TickCount() < duck_cd_until
-		local b = cmd:GetButtons()
-		local moving = bit.band(b, MOVE_BITS) ~= 0
-			or math.abs(cmd:GetForwardMove()) > 5 or math.abs(cmd:GetSideMove()) > 5
-		local want_stand = duck_can_peek and not moving and not in_cd
+		local now    = globals.TickCount()
+		local in_cd  = now < duck_cd_until
+		local seen   = duck_can_peek and (now - duck_seen_since >= NOFIRE_STAND_TICKS)
+		local nofire = (now - duck_fire_tick >= NOFIRE_STAND_TICKS)
+		local want_stand = duck_can_peek and seen and nofire and not in_cd
 		if not want_stand then force_duck(cmd) end
 	end
 
@@ -520,6 +525,9 @@ local function on_draw()
 	-- never peek/stand with a knife out - stay crouched
 	duck_can_peek = alive and weapon_class(dlp) ~= "knife"
 		and enemy_in_view(dlp, 180, 0)
+	-- remember when the target first appeared (for the ~200ms "not firing" rule)
+	if duck_can_peek and not duck_prev_seen then duck_seen_since = globals.TickCount() end
+	duck_prev_seen = duck_can_peek
 
 	if not g.master:GetValue() then return end
 
@@ -557,10 +565,14 @@ local function on_event(event)
 	if name == "weapon_fire" then
 		local ok = pcall(function()
 			if client.GetPlayerIndexByUserID(event:GetInt("userid")) == client.GetLocalPlayerIndex() then
-				duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS
+				duck_fire_tick = globals.TickCount()
+				duck_cd_until  = globals.TickCount() + DUCK_COOLDOWN_TICKS
 			end
 		end)
-		if not ok then duck_cd_until = globals.TickCount() + DUCK_COOLDOWN_TICKS end
+		if not ok then
+			duck_fire_tick = globals.TickCount()
+			duck_cd_until  = globals.TickCount() + DUCK_COOLDOWN_TICKS
+		end
 	elseif name == "player_hurt" then
 		pcall(function()
 			local by_me = client.GetPlayerIndexByUserID(event:GetInt("attacker")) == client.GetLocalPlayerIndex()
