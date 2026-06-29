@@ -6,7 +6,7 @@
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
-local TAB = gui.Reference("Ragebot", "Anti-Aim")
+local TAB = gui.Reference("Ragebot", "Auto Peek")
 
 -- ============================================================
 -- constants
