@@ -34,6 +34,14 @@ local AUTO_YAW = {
 	other  = { -145, -152, -158, -154 }, -- rifles & snipers (everything else)
 }
 
+-- Manual Left / Right yaw offset (relative to local view) per state.
+-- Used in BOTH Local View and Auto Yaw. Knife uses the pistol values.
+-- each entry: { left, right }; state index 1 Standing,2 Moving,3 Crouch,4 Air.
+local MANUAL = {
+	pistol = { { 100, -75 }, { 100, -80 }, { 111, 65 }, { 93, -78 } },
+	other  = { { 124, -52 }, { 117, -67 }, { 108, -70 }, { 120, -62 } },
+}
+
 -- ============================================================
 -- GUI
 -- ============================================================
@@ -72,7 +80,6 @@ g.pitch_value = gui.Slider  (TAB, "aa_pitch_value", "Pitch Offset", -89, -89, 89
 -- manual directions
 g.key_right   = gui.Keybox(TAB, "aa_key_right",   "Manual Right",   0)
 g.key_left    = gui.Keybox(TAB, "aa_key_left",    "Manual Left",    0)
-g.key_back    = gui.Keybox(TAB, "aa_key_back",    "Manual Back",    0)
 g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
 
 -- conditions
@@ -86,7 +93,7 @@ g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true
 -- state
 -- ============================================================
 local pre_va = EulerAngles(0, 0, 0)
-local manual = 0 -- 0 none, 1 right, 2 left, 3 back, 4 forward
+local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local cur_state_name = "Standing"
 local cur_group_name = "Pistols"
 local cur_yaw = 0
@@ -162,15 +169,15 @@ local function pre_move(cmd)
 	local wclass = weapon_class(lp)
 	local group  = (wclass == "pistol") and 1 or 3
 
+	-- manual directions use tuned per-weapon/per-state offsets (knife -> pistol)
+	local mcls = (wclass == "other") and "other" or "pistol"
 	-- yaw: manual override > auto/base mode
 	if manual == 1 then
-		va.y = base - 90
+		va.y = base + MANUAL[mcls][state][2] -- right
 	elseif manual == 2 then
-		va.y = base + 90
+		va.y = base + MANUAL[mcls][state][1] -- left
 	elseif manual == 3 then
-		va.y = base + 180
-	elseif manual == 4 then
-		va.y = base
+		va.y = base -- forward
 	elseif g.base:GetValue() == 1 then
 		-- Auto Yaw: built-in tuned offset per weapon class + state
 		va.y = base + AUTO_YAW[wclass][state]
@@ -253,8 +260,7 @@ local function on_draw()
 	-- manual direction toggles
 	handle_key(g.key_right, 1)
 	handle_key(g.key_left, 2)
-	handle_key(g.key_back, 3)
-	handle_key(g.key_forward, 4)
+	handle_key(g.key_forward, 3)
 
 	-- indicator
 	if g.indicator:GetValue() then
@@ -262,8 +268,7 @@ local function on_draw()
 		local dir = "AUTO"
 		if manual == 1 then dir = "RIGHT"
 		elseif manual == 2 then dir = "LEFT"
-		elseif manual == 3 then dir = "BACK"
-		elseif manual == 4 then dir = "FORWARD" end
+		elseif manual == 3 then dir = "FORWARD" end
 		draw.Color(120, 200, 255, 255)
 		draw.TextShadow(cx - 60, cy + 16, "AA: " .. (g.base:GetValue() == 1 and "AUTO" or "MANUAL"))
 		draw.TextShadow(cx - 60, cy + 31, cur_group_name .. " / " .. cur_state_name)
