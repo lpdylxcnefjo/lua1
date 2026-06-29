@@ -53,7 +53,8 @@ local MANUAL = {
 local g = {}
 
 g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
-g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw", "At Target")
+-- Auto Yaw is always applied; this only picks the reference the yaw is built on
+g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "At Target")
 
 -- yaw offset shifts the base yaw (0 = the base value itself)
 g.yaw_offset = gui.Slider(TAB, "aa_yaw_offset", "Yaw Offset", 0, -180, 180, 0.1)
@@ -246,10 +247,10 @@ local function pre_move(cmd)
 	local tick   = globals.TickCount()
 	local state  = current_state(lp, cmd)
 	local wclass = weapon_class(lp)
-	local bmode  = g.base:GetValue() -- 0 Local View, 1 Auto Yaw, 2 At Target
+	local bmode  = g.base:GetValue() -- 0 Local View, 1 At Target
 	local has_target = false
 	local base = pre_va.y -- local view
-	if bmode == 2 then
+	if bmode == 1 then
 		local ty = target_yaw(lp)
 		if ty then base = ty; has_target = true end
 	end
@@ -265,9 +266,9 @@ local function pre_move(cmd)
 	elseif manual == 3 then
 		goal = 0 -- forward
 	else
-		-- base yaw + offset + modifier jitter
-		local b = (g.base:GetValue() == 1) and AUTO_YAW[wclass][state] or 0
-		goal = b + g.yaw_offset:GetValue() + modifier_jitter(tick)
+		-- Auto Yaw is always on: tuned per-weapon/state value (= 0 on the slider)
+		-- + Yaw Offset + Modifier jitter, built on the chosen base reference.
+		goal = AUTO_YAW[wclass][state] + g.yaw_offset:GetValue() + modifier_jitter(tick)
 	end
 
 	-- detect a manual switch: left<->right rotates through the back
@@ -383,13 +384,13 @@ local function on_draw()
 		elseif manual == 2 then dir = "LEFT"
 		elseif manual == 3 then dir = "FORWARD" end
 		local bm = g.base:GetValue()
-		local mode = (bm == 1) and "AUTO" or (bm == 2) and "AT TARGET" or "LOCAL"
+		local mode = (bm == 1) and "AT TARGET" or "LOCAL"
 		draw.Color(120, 200, 255, 255)
-		draw.TextShadow(cx - 60, cy + 16, "AA: " .. mode)
+		draw.TextShadow(cx - 60, cy + 16, "AUTO YAW: " .. mode)
 		draw.TextShadow(cx - 60, cy + 31, cur_group_name .. " / " .. cur_state_name)
 		draw.TextShadow(cx - 60, cy + 46, "DIR: " .. dir)
 		draw.TextShadow(cx - 60, cy + 61, string.format("YAW: %.1f", cur_yaw))
-		if bm == 2 then
+		if bm == 1 then
 			draw.TextShadow(cx - 60, cy + 76, "TARGET: " .. (cur_target and "YES" or "NONE"))
 		end
 	end
