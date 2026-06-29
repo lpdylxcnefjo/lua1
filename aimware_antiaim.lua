@@ -93,13 +93,10 @@ g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    tru
 g.anti_invalid = gui.Checkbox(TAB2, "aa_anti_invalid", "Anti-Invalid Angle", true)
 g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
 
--- extra duck peek assist (Ragebot > Main): hold key to crouch, or Auto mode
--- (crouch by default, stand when an enemy is in your FOV+range, Shadow-style
--- but without bullet-trace damage which this API can't do)
-g.duck_peek    = gui.Keybox  (TABM, "aa_duck_peek",  "Duck Peek Assist+", 0)
-g.duck_auto    = gui.Checkbox(TABM, "aa_duck_auto",  "Duck Peek Auto", false)
-g.duck_fov     = gui.Slider  (TABM, "aa_duck_fov",   "Duck Peek FOV", 30, 1, 180, 1)
-g.duck_range   = gui.Slider  (TABM, "aa_duck_range", "Duck Peek Range", 1200, 0, 8000, 50)
+-- extra duck peek assist (Ragebot > Main): hold the bind and you stay crouched,
+-- standing up automatically whenever an enemy is on screen (Shadow-style, but
+-- without bullet-trace damage which this API can't do)
+g.duck_peek    = gui.Keybox(TABM, "aa_duck_peek", "Duck Peek Assist+", 0)
 
 -- locate the native "Duck Peek assist" keybind (Ragebot > Main) so we can read
 -- the key the user bound there and drive the duck ourselves
@@ -357,12 +354,10 @@ local function pre_move(cmd)
 	-- hold mode: read our keybox, or fall back to the native "Duck Peek assist".
 	local dk = g.duck_peek:GetValue()
 	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
+	-- while the bind is held: stay crouched, but stand when an enemy is on
+	-- screen (duck_can_peek is computed in Draw, where screen projection works).
 	local hold = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
-	-- auto mode: crouch by default, stand only when an enemy is in view. the
-	-- "enemy in view" check uses screen projection so it runs in Draw; here we
-	-- just read the flag it set.
-	local auto_duck = g.duck_auto:GetValue() and not duck_can_peek
-	if hold or auto_duck then force_duck(cmd) end
+	if hold and not duck_can_peek then force_duck(cmd) end
 
 	if not g.master:GetValue() then return end
 
@@ -503,17 +498,12 @@ local function on_draw()
 	g.mod_random:SetInvisible(not (m == 3 or m == 4))
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
-	-- Duck Peek Auto: decide here (screen projection only works in Draw),
-	-- independent of the AA builder master switch.
-	if g.duck_auto:GetValue() then
-		local dlp = entities.GetLocalPlayer()
-		local alive = false
-		if dlp then pcall(function() alive = dlp:IsAlive() end) end
-		duck_can_peek = alive
-			and enemy_in_view(dlp, g.duck_fov:GetValue(), g.duck_range:GetValue())
-	else
-		duck_can_peek = false
-	end
+	-- Duck Peek: decide "enemy on screen" here (screen projection only works in
+	-- Draw). Full FOV (180), no distance limit. Independent of the AA master.
+	local dlp = entities.GetLocalPlayer()
+	local alive = false
+	if dlp then pcall(function() alive = dlp:IsAlive() end) end
+	duck_can_peek = alive and enemy_in_view(dlp, 180, 0)
 
 	if not g.master:GetValue() then return end
 
