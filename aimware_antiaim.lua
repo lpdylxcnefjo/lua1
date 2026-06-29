@@ -9,6 +9,8 @@
 local TAB  = gui.Reference("Ragebot", "Anti-Aim")
 -- manual directions / conditions / indicator live in the Auto Peek tab
 local TAB2 = gui.Reference("Ragebot", "Auto Peek")
+-- extra duck peek assist keybox lives in Ragebot > Main
+local TABM = gui.Reference("Ragebot", "Main")
 
 -- ============================================================
 -- constants
@@ -16,7 +18,8 @@ local TAB2 = gui.Reference("Ragebot", "Auto Peek")
 local STATES = { "Standing", "Moving", "Crouched", "In Air" }
 
 local IN_ATTACK   = bit.lshift(1, 0)
-local IN_DUCK     = bit.lshift(1, 1)
+local IN_JUMP     = bit.lshift(1, 1)
+local IN_DUCK     = bit.lshift(1, 2)
 local IN_FORWARD  = bit.lshift(1, 3)
 local IN_BACK     = bit.lshift(1, 4)
 local ON_USE      = bit.lshift(1, 5)
@@ -80,9 +83,6 @@ g.key_left    = gui.Keybox(TAB2, "aa_key_left",    "Manual Left",    0)
 g.key_forward = gui.Keybox(TAB2, "aa_key_forward", "Manual Forward", 0)
 g.fwd_mode    = gui.Combobox(TAB2, "aa_fwd_mode",   "Forward: Mode", "Toggle", "Hold")
 
--- duck peek assist: force crouch while held (own bind, native one doesn't work)
-g.duck_peek   = gui.Keybox(TAB2, "aa_duck_peek", "Duck Peek Assist", 0)
-
 -- brief jitter at the moment a manual direction is switched
 g.switch_jitter = gui.Checkbox(TAB2, "aa_switch_jitter", "Manual Switch Jitter", true)
 
@@ -92,6 +92,9 @@ g.on_use       = gui.Checkbox(TAB2, "aa_on_use",       "Disable on Use",     tru
 g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    true)
 g.anti_invalid = gui.Checkbox(TAB2, "aa_anti_invalid", "Anti-Invalid Angle", true)
 g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
+
+-- extra duck peek assist (forces crouch while held), placed in Ragebot > Main
+g.duck_peek    = gui.Keybox(TABM, "aa_duck_peek", "Duck Peek Assist+", 0)
 
 -- locate the native "Duck Peek assist" keybind (Ragebot > Main) so we can read
 -- the key the user bound there and drive the duck ourselves
