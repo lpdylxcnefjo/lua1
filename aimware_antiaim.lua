@@ -6,8 +6,7 @@
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
--- own custom tab (created via gui.Tab) so all controls live in one place
-local TAB = gui.Tab(gui.Reference("MISC"), "aa_tab", "Anti-Aim Builder")
+local TAB = gui.Reference("Ragebot", "Anti-Aim")
 
 -- ============================================================
 -- constants
