@@ -1,5 +1,5 @@
 -- Aimware CS2 - Anti-Aim Builder
--- Per-state anti-aim (Standing / Moving / In Air), yaw modes, pitch/roll,
+-- Per-state anti-aim (Standing / Moving / Crouched / In Air), yaw modes, pitch,
 -- manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
@@ -8,11 +8,17 @@ local TAB = gui.Reference("Ragebot", "Anti-Aim")
 -- ============================================================
 -- constants
 -- ============================================================
-local STATES      = { "Standing", "Moving", "In Air" }
-local YAW_MODES   = { "Disabled", "Static", "Jitter", "Spin", "Random" }
+local STATES      = { "Standing", "Moving", "Crouched", "In Air" }
+local YAW_MODES   = { "Disabled", "Static", "Jitter", "Spin" }
 local IN_ATTACK   = bit.lshift(1, 0)
+local IN_FORWARD  = bit.lshift(1, 3)
+local IN_BACK     = bit.lshift(1, 4)
 local ON_USE      = bit.lshift(1, 5)
+local IN_LEFT     = bit.lshift(1, 9)
+local IN_RIGHT    = bit.lshift(1, 10)
+local MOVE_BITS   = IN_FORWARD + IN_BACK + IN_LEFT + IN_RIGHT
 local FL_ONGROUND = bit.lshift(1, 0)
+local FL_DUCKING  = bit.lshift(1, 1)
 local MOVETYPE_LADDER = 9
 local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 
@@ -21,11 +27,11 @@ local FAKE_PITCH  = -3402823346297399750336966557696 -- fake-down exploit value
 -- ============================================================
 local g = {}
 
-g.master   = gui.Checkbox(TAB, "aa_master",   "Enable AA Builder", false)
-g.base     = gui.Combobox(TAB, "aa_base",     "Yaw Base", "Crosshair", "At Target")
-g.edit     = gui.Combobox(TAB, "aa_edit",     "Edit State", unpack(STATES))
+g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
+g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Crosshair", "At Target")
+g.edit   = gui.Combobox(TAB, "aa_edit",   "Edit State", unpack(STATES))
 
--- per-state yaw controls (only the selected state's controls are shown)
+-- per-state yaw controls (only the selected state's relevant controls are shown)
 local st = {}
 for i = 1, #STATES do
 	local key = STATES[i]:gsub("%s", ""):lower()
@@ -39,11 +45,9 @@ for i = 1, #STATES do
 	}
 end
 
--- pitch / roll
+-- pitch
 g.pitch       = gui.Combobox(TAB, "aa_pitch",       "Pitch", "Disabled", "Down", "Up", "Jitter", "Zero", "Fake Down", "Custom")
 g.pitch_value = gui.Slider  (TAB, "aa_pitch_value", "Pitch Offset", -89, -89, 89, 0.1)
-g.roll        = gui.Combobox(TAB, "aa_roll",        "Roll", "Disabled", "Static", "Wave", "Spin")
-g.roll_value  = gui.Slider  (TAB, "aa_roll_value",  "Roll Offset", 0, -45, 45, 0.1)
 
 -- manual directions
 g.key_right   = gui.Keybox(TAB, "aa_key_right",   "Manual Right",   0)
@@ -52,17 +56,19 @@ g.key_back    = gui.Keybox(TAB, "aa_key_back",    "Manual Back",    0)
 g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
 
 -- conditions
-g.disable_shot = gui.Checkbox(TAB, "aa_disable_shot", "Disable on Shot", true)
+g.on_ladder    = gui.Checkbox(TAB, "aa_on_ladder",    "Disable on Ladder",  true)
+g.on_use       = gui.Checkbox(TAB, "aa_on_use",       "Disable on Use",     true)
+g.disable_shot = gui.Checkbox(TAB, "aa_disable_shot", "Disable on Shot",    true)
 g.anti_invalid = gui.Checkbox(TAB, "aa_anti_invalid", "Anti-Invalid Angle", true)
-g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator", true)
+g.indicator    = gui.Checkbox(TAB, "aa_indicator",    "Indicator",          true)
 
 -- ============================================================
 -- state
 -- ============================================================
-local pre_va  = EulerAngles(0, 0, 0)
-local manual  = 0 -- 0 none, 1 right, 2 left, 3 back, 4 forward
+local pre_va = EulerAngles(0, 0, 0)
+local manual = 0 -- 0 none, 1 right, 2 left, 3 back, 4 forward
 local cur_state_name = "Standing"
-local cur_yaw  = 0
+local cur_yaw = 0
 
 -- ============================================================
 -- helpers
@@ -76,40 +82,42 @@ end
 -- yaw (deg) toward the closest alive enemy, or nil
 local function target_yaw(lp)
 	local best, best_d
-	local ok = pcall(function()
+	pcall(function()
 		local my_team = field_int(lp, "m_iTeamNum")
 		local my_pos  = lp:GetAbsOrigin()
 		local players = entities.FindByClass("CCSPlayer")
-		for _, e in ipairs(players) do
+		for i = 1, #players do
+			local e = players[i]
 			if e and e ~= lp and e:IsAlive() and field_int(e, "m_iTeamNum") ~= my_team then
 				local dir = e:GetAbsOrigin() - my_pos
 				local d   = dir.x * dir.x + dir.y * dir.y
-				if not best_d or d < best_d then
+				if d > 1 and (not best_d or d < best_d) then
 					best_d = d
 					best   = dir:Angles().y
 				end
 			end
 		end
 	end)
-	if ok then return best end
-	return nil
+	return best
 end
 
 local function current_state(lp, cmd)
 	local flags = field_int(lp, "m_fFlags")
-	local on_ground = bit.band(flags, FL_ONGROUND) ~= 0
-	if not on_ground then return 3 end
-	if math.abs(cmd:GetForwardMove()) > 5 or math.abs(cmd:GetSideMove()) > 5 then return 2 end
-	return 1
+	if bit.band(flags, FL_ONGROUND) == 0 then return 4 end -- In Air
+	if bit.band(flags, FL_DUCKING) ~= 0 then return 3 end  -- Crouched
+	local buttons = cmd:GetButtons()
+	if bit.band(buttons, MOVE_BITS) ~= 0
+		or math.abs(cmd:GetForwardMove()) > 5 or math.abs(cmd:GetSideMove()) > 5 then
+		return 2 -- Moving
+	end
+	return 1 -- Standing
 end
 
--- yaw produced by a state's mode, relative to the base
+-- yaw produced by a state's mode, relative to the base; nil = leave native yaw
 local function state_yaw(s, tick)
-	local mode = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin,4 Random
+	local mode = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
 	local center = s.yaw:GetValue()
-	if mode == 0 then
-		return nil
-	elseif mode == 1 then
+	if mode == 1 then
 		return center
 	elseif mode == 2 then
 		local l, r = s.left:GetValue(), s.right:GetValue()
@@ -119,9 +127,6 @@ local function state_yaw(s, tick)
 		return phase == 0 and (center - l) or (center + r)
 	elseif mode == 3 then
 		return center + (tick * s.spin:GetValue()) % 360
-	elseif mode == 4 then
-		local l, r = s.left:GetValue(), s.right:GetValue()
-		return center + math.random() * (l + r) - l
 	end
 	return nil
 end
@@ -136,13 +141,10 @@ local function pre_move(cmd)
 	local lp = entities.GetLocalPlayer()
 	if not lp or not lp:IsAlive() then return end
 
-	-- conditions that disable AA
-	local weapon_type = lp:GetWeaponType()
-	local move_type   = field_int(lp, "m_nActualMoveType")
-	local buttons     = cmd:GetButtons()
-	if move_type == MOVETYPE_LADDER then return end
-	if bit.band(buttons, ON_USE) ~= 0 then return end
-	if weapon_type == 0 or weapon_type == 9 then return end -- knife / grenade
+	local move_type = field_int(lp, "m_nActualMoveType")
+	local buttons   = cmd:GetButtons()
+	if g.on_ladder:GetValue() and move_type == MOVETYPE_LADDER then return end
+	if g.on_use:GetValue() and bit.band(buttons, ON_USE) ~= 0 then return end
 	if g.disable_shot:GetValue() and bit.band(buttons, IN_ATTACK) ~= 0 then return end
 
 	-- base yaw
@@ -191,22 +193,12 @@ local function pre_move(cmd)
 		va.x = g.pitch_value:GetValue()
 	end
 
-	-- roll (camera)
-	local rm = g.roll:GetValue() -- 0 Disabled,1 Static,2 Wave,3 Spin
-	if rm == 1 then
-		va.z = g.roll_value:GetValue()
-	elseif rm == 2 then
-		va.z = math.sin(tick / 100) * 45
-	elseif rm == 3 then
-		va.z = (tick * 1) % 360
-	end
-
 	-- anti-invalid clamp
 	if g.anti_invalid:GetValue() then
 		if va.y > 180 then va.y = va.y - 360 elseif va.y < -180 then va.y = va.y + 360 end
 		if va.x > 89 then va.x = 89 elseif va.x < -89 then va.x = -89 end
-		if va.z ~= 0 then va.z = 0 end
 	end
+	va.z = 0
 
 	cur_state_name = STATES[current_state(lp, cmd)]
 	cur_yaw = va.y
@@ -226,19 +218,20 @@ end
 local screen_x, screen_y = draw.GetScreenSize()
 
 local function on_draw()
-	-- show only the selected state's yaw controls
+	-- show only the selected state's controls, and only the ones its mode uses
 	local sel = g.edit:GetValue() + 1
 	for i = 1, #STATES do
-		local hidden = (i ~= sel)
-		st[i].mode:SetInvisible(hidden)
-		st[i].yaw:SetInvisible(hidden)
-		st[i].left:SetInvisible(hidden)
-		st[i].right:SetInvisible(hidden)
-		st[i].speed:SetInvisible(hidden)
-		st[i].spin:SetInvisible(hidden)
+		local s = st[i]
+		local shown = (i == sel)
+		local mode  = s.mode:GetValue() -- 0 Disabled,1 Static,2 Jitter,3 Spin
+		s.mode:SetInvisible(not shown)
+		s.yaw:SetInvisible(not (shown and mode ~= 0))
+		s.left:SetInvisible(not (shown and mode == 2))
+		s.right:SetInvisible(not (shown and mode == 2))
+		s.speed:SetInvisible(not (shown and mode == 2))
+		s.spin:SetInvisible(not (shown and mode == 3))
 	end
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
-	g.roll_value:SetInvisible(g.roll:GetValue() == 0)
 
 	if not g.master:GetValue() then return end
 
