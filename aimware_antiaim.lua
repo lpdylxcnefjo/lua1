@@ -311,13 +311,19 @@ local function force_duck(cmd)
 	if not ok then pcall(function() cmd.in_duck = true end) end
 end
 
--- is a live enemy within `fov` degrees of where you're looking and `range`
--- units away? used by Duck Peek Auto to decide when to stand up and shoot.
+-- is a live enemy on screen (in front of you) within a centred FOV box and
+-- `range` units? used by Duck Peek Auto to decide when to stand up. We use the
+-- actual screen projection instead of raw angles - reliable and FOV-correct.
 local function enemy_in_view(lp, fov, range)
 	local my = origin_of(lp)
 	if not my then return false end
 	local myteam = field_int(lp, "m_iTeamNum")
 	local range2 = (range > 0) and (range * range) or nil
+	local sx, sy = 1920, 1080
+	pcall(function() sx, sy = draw.GetScreenSize() end)
+	local cx, cy = sx / 2, sy / 2
+	local frac = math.max(1, fov) / 180 -- fov 180 = whole screen, 30 = centre
+	local hx, hy = (sx / 2) * frac, (sy / 2) * frac
 	for i = 1, #esp_targets do
 		local e = esp_targets[i]
 		if e ~= lp and is_live_player(e) then
@@ -327,12 +333,12 @@ local function enemy_in_view(lp, fov, range)
 				if p then
 					local d2 = (p.x - my.x) ^ 2 + (p.y - my.y) ^ 2 + (p.z - my.z) ^ 2
 					if not range2 or d2 <= range2 then
-						local ya, pa
-						pcall(function() local a = (p - my):Angles(); ya = a.y; pa = a.x end)
-						if ya then
-							local dy = wrap180(ya - pre_va.y)
-							local dp = (pa or pre_va.x) - pre_va.x
-							if math.sqrt(dy * dy + dp * dp) <= fov then return true end
+						local px, py
+						pcall(function() px, py = client.WorldToScreen(p) end)
+						-- valid (in front) and inside the FOV box around the centre
+						if px and py and px == px and py == py
+							and math.abs(px - cx) <= hx and math.abs(py - cy) <= hy then
+							return true
 						end
 					end
 				end
