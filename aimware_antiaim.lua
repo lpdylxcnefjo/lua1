@@ -440,7 +440,9 @@ end
 -- another player) then we'd have a clear shot from standing -> stand up to peek.
 -- otherwise something's in the way from up there, so stay crouched.
 local STAND_EYE_Z = 64        -- standing view height (origin + 64)
-local DUCK_BONES  = { 0, 2, 4, 6 } -- head, chest, stomach, pelvis
+local DUCK_BONES  = { 0, 2, 4, 6, 3, 5 } -- head, chest, stomach, pelvis, +arms/sides
+local PEN_UNITS   = 18        -- max wall thickness (units) we treat as shoot-through
+local HIT_FRAC    = 0.95      -- trace reached ~the target point = clear shot
 
 local function same_entity(a, b)
 	if a == b then return true end
@@ -448,6 +450,37 @@ local function same_entity(a, b)
 	pcall(function() ia = a:GetIndex() end)
 	pcall(function() ib = b:GetIndex() end)
 	return ia ~= nil and ia == ib
+end
+
+-- did this trace effectively reach the target point / hit the target player?
+local function tr_hit(tr, enemy)
+	if not tr then return false end
+	if tr.fraction and tr.fraction >= HIT_FRAC then return true end
+	if tr.entity and same_entity(tr.entity, enemy) then return true end
+	return false
+end
+
+-- can a shot from `from` reach the enemy hitbox at `to`? straight LOS, or - since
+-- there's no native penetration trace - a single shoot-through approximation:
+-- if a thin (<= PEN_UNITS) wall blocks it, step past the impact and re-trace.
+local function can_reach(from, to, enemy)
+	local tr
+	pcall(function() tr = engine.TraceLine(from, to) end)
+	if tr_hit(tr, enemy) then return true end
+	if not (tr and tr.endpos) then return false end
+	local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+	local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+	if len < 1e-4 then return false end
+	dx, dy, dz = dx / len, dy / len, dz / len
+	local p2
+	pcall(function()
+		p2 = Vector3(tr.endpos.x + dx * PEN_UNITS,
+			tr.endpos.y + dy * PEN_UNITS, tr.endpos.z + dz * PEN_UNITS)
+	end)
+	if not p2 then return false end
+	local tr2
+	pcall(function() tr2 = engine.TraceLine(p2, to) end)
+	return tr_hit(tr2, enemy)
 end
 
 local function enemy_hittable_standing(lp)
@@ -467,15 +500,7 @@ local function enemy_hittable_standing(lp)
 				for _, hb in ipairs(DUCK_BONES) do
 					local pos
 					pcall(function() pos = e:GetHitboxPosition(hb) end)
-					if pos then
-						local tr
-						pcall(function() tr = engine.TraceLine(from, pos) end)
-						if tr then
-							local clear = (tr.fraction and tr.fraction >= 0.97)
-								or (tr.entity and same_entity(tr.entity, e))
-							if clear then return true end
-						end
-					end
+					if pos and can_reach(from, pos, e) then return true end
 				end
 			end
 		end
