@@ -57,12 +57,13 @@ g.base   = gui.Combobox(TAB, "aa_base",   "Yaw Base", "Local View", "Auto Yaw")
 g.yaw_offset = gui.Slider(TAB, "aa_yaw_offset", "Yaw Offset", 0, -180, 180, 0.1)
 
 -- modifier: jitter pattern applied on top of the base yaw
-g.modifier   = gui.Combobox(TAB, "aa_modifier", "Modifier", "Center", "Offset", "3-Way", "5-Way", "Anti-Nixware")
+g.modifier   = gui.Combobox(TAB, "aa_modifier", "Modifier", "Disabled", "Center", "Offset", "3-Way", "5-Way", "Anti-Nixware")
 g.mod_left   = gui.Slider  (TAB, "aa_mod_left",   "Modifier Left",   0, 0, 180, 0.1)
 g.mod_right  = gui.Slider  (TAB, "aa_mod_right",  "Modifier Right",  0, 0, 180, 0.1)
 g.mod_offset = gui.Slider  (TAB, "aa_mod_offset", "Modifier Offset", 60, -180, 180, 0.1)
 g.mod_3way   = gui.Slider  (TAB, "aa_mod_3way",   "Modifier Range",  45, 0, 180, 0.1)
 g.mod_5way   = gui.Slider  (TAB, "aa_mod_5way",   "Modifier Range",  45, 0, 180, 0.1)
+g.mod_delay  = gui.Slider  (TAB, "aa_mod_delay",  "Modifier Delay",   4, 1, 32, 1)
 
 -- pitch
 g.pitch       = gui.Combobox(TAB, "aa_pitch",       "Pitch", "Disabled", "Down", "Up", "Jitter", "Zero", "Fake Down", "Custom")
@@ -72,6 +73,7 @@ g.pitch_value = gui.Slider  (TAB, "aa_pitch_value", "Pitch Offset", -89, -89, 89
 g.key_right   = gui.Keybox(TAB, "aa_key_right",   "Manual Right",   0)
 g.key_left    = gui.Keybox(TAB, "aa_key_left",    "Manual Left",    0)
 g.key_forward = gui.Keybox(TAB, "aa_key_forward", "Manual Forward", 0)
+g.fwd_mode    = gui.Combobox(TAB, "aa_fwd_mode",   "Forward: Mode", "Toggle", "Hold")
 
 -- brief jitter at the moment a manual direction is switched
 g.switch_jitter = gui.Checkbox(TAB, "aa_switch_jitter", "Manual Switch Jitter", true)
@@ -146,21 +148,24 @@ local function sweep_target(from, to)
 	return from + (to - fw) -- same side: direct
 end
 
--- modifier jitter offset (added on top of the base yaw)
+-- modifier jitter offset (added on top of the base yaw). the Delay slider sets
+-- how many ticks each step lasts (higher = slower jitter).
 local function modifier_jitter(tick)
-	local m = g.modifier:GetValue() -- 0 Center,1 Offset,2 3-Way,3 5-Way,4 Anti-Nixware
-	if m == 0 then -- Center: alternate -left / +right each tick
-		return ((tick % 2) == 0) and -g.mod_left:GetValue() or g.mod_right:GetValue()
-	elseif m == 1 then -- Offset: alternate 0 / offset
-		return ((tick % 2) == 0) and 0 or g.mod_offset:GetValue()
-	elseif m == 2 then -- 3-Way: -a, 0, +a
+	local m = g.modifier:GetValue() -- 0 Disabled,1 Center,2 Offset,3 3-Way,4 5-Way,5 Anti-Nixware
+	if m == 0 then return 0 end
+	local phase = math.floor(tick / math.max(1, g.mod_delay:GetValue()))
+	if m == 1 then -- Center: alternate -left / +right
+		return ((phase % 2) == 0) and -g.mod_left:GetValue() or g.mod_right:GetValue()
+	elseif m == 2 then -- Offset: alternate 0 / offset
+		return ((phase % 2) == 0) and 0 or g.mod_offset:GetValue()
+	elseif m == 3 then -- 3-Way: -a, 0, +a
 		local a = g.mod_3way:GetValue()
-		local p = tick % 3
+		local p = phase % 3
 		if p == 0 then return -a elseif p == 1 then return 0 end
 		return a
-	elseif m == 3 then -- 5-Way: -a, -a/2, 0, a/2, a
+	elseif m == 4 then -- 5-Way: -a, -a/2, 0, a/2, a
 		local a = g.mod_5way:GetValue()
-		local p = tick % 5
+		local p = phase % 5
 		if p == 0 then return -a
 		elseif p == 1 then return -a / 2
 		elseif p == 2 then return 0
@@ -280,13 +285,28 @@ end
 
 local screen_x, screen_y = draw.GetScreenSize()
 
+local function handle_forward()
+	local key = g.key_forward:GetValue()
+	if key == 0 then return end
+	if g.fwd_mode:GetValue() == 1 then -- Hold
+		if input.IsButtonDown(key) then
+			if manual ~= 3 then manual = 3; switch_tick = globals.TickCount() end
+		elseif manual == 3 then
+			manual = 0
+		end
+	else -- Toggle
+		handle_key(g.key_forward, 3)
+	end
+end
+
 local function on_draw()
 	local m = g.modifier:GetValue()
-	g.mod_left:SetInvisible(m ~= 0)
-	g.mod_right:SetInvisible(m ~= 0)
-	g.mod_offset:SetInvisible(m ~= 1)
-	g.mod_3way:SetInvisible(m ~= 2)
-	g.mod_5way:SetInvisible(m ~= 3)
+	g.mod_left:SetInvisible(m ~= 1)
+	g.mod_right:SetInvisible(m ~= 1)
+	g.mod_offset:SetInvisible(m ~= 2)
+	g.mod_3way:SetInvisible(m ~= 3)
+	g.mod_5way:SetInvisible(m ~= 4)
+	g.mod_delay:SetInvisible(m == 0 or m == 5)
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
 	if not g.master:GetValue() then return end
@@ -294,7 +314,7 @@ local function on_draw()
 	-- manual direction toggles
 	handle_key(g.key_right, 1)
 	handle_key(g.key_left, 2)
-	handle_key(g.key_forward, 3)
+	handle_forward()
 
 	-- indicator
 	if g.indicator:GetValue() then
