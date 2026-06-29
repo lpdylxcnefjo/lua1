@@ -150,12 +150,13 @@ end
 -- entities each ESP pass and target from them. Weapons are filtered out by
 -- requiring health, and we cache the last enemy so turning away (which stops
 -- the ESP draw for that player) doesn't instantly drop the target.
-local TARGET_HOLD_TICKS = 128 -- keep last target this long after it leaves ESP
+local TARGET_HOLD_TICKS = 512 -- keep last target this long after it leaves ESP (~8s)
 local esp_targets   = {} -- entities from the last completed ESP pass
 local esp_frame     = {} -- staging for the current pass
 local esp_last_tick = -1
 local last_target   = nil -- remembered enemy entity
 local last_target_t = -1000
+local last_target_p = nil -- last good position of the remembered enemy
 local target_count  = 0  -- live enemies seen last pass (for the indicator)
 
 local function is_live_player(e)
@@ -202,11 +203,12 @@ local function target_yaw(lp)
 			end
 		end
 	end
-	-- nothing visible this pass: fall back to the last enemy for a short while
+	-- nothing visible this pass: keep the last enemy for a while (re-read its
+	-- position, or use the last good one if it went stale off-screen)
 	if not best_p and last_target and (now - last_target_t) <= TARGET_HOLD_TICKS then
-		best_p = origin_of(last_target)
+		best_p = origin_of(last_target) or last_target_p
 	end
-	if best_e then last_target = best_e; last_target_t = now end
+	if best_e then last_target = best_e; last_target_t = now; last_target_p = best_p end
 	if not best_p then return nil end
 	local ya
 	local ok = pcall(function() ya = (best_p - my):Angles().y end)
