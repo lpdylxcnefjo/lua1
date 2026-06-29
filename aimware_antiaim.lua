@@ -296,6 +296,18 @@ local function pre_move(cmd)
 		if ty then base = ty; has_target = true end
 	end
 
+	-- pitch value + how "down" it is (1 = full down -> full Auto Yaw,
+	-- 0 = level/up -> straight yaw). Auto Yaw is scaled by this factor.
+	local pm = g.pitch:GetValue() -- 0 Disabled,1 Down,2 Up,3 Jitter,4 Zero,5 Fake,6 Custom
+	local pitch_val, pfactor
+	if pm == 1 then     pitch_val = 89;  pfactor = 1
+	elseif pm == 2 then pitch_val = -89; pfactor = 0
+	elseif pm == 3 then pitch_val = (tick % 2 == 0) and 89 or -89; pfactor = (pitch_val > 0) and 1 or 0
+	elseif pm == 4 then pitch_val = 0;   pfactor = 0
+	elseif pm == 5 then pitch_val = FAKE_PITCH; pfactor = 1 -- fake down
+	elseif pm == 6 then pitch_val = g.pitch_value:GetValue(); pfactor = math.max(0, math.min(1, pitch_val / 89))
+	else                pitch_val = nil; pfactor = math.max(0, math.min(1, pre_va.x / 89)) end -- Disabled: keep player's pitch
+
 	-- target yaw offset for the active mode (manual offsets are tuned per weapon
 	-- and state; knife -> pistol)
 	local mcls = (wclass == "other") and "other" or "pistol"
@@ -307,9 +319,10 @@ local function pre_move(cmd)
 	elseif manual == 3 then
 		goal = 0 -- forward
 	else
-		-- Auto Yaw is always on: tuned per-weapon/state value (= 0 on the slider)
-		-- + Yaw Offset + Modifier jitter, built on the chosen base reference.
-		goal = AUTO_YAW[wclass][state] + g.yaw_offset:GetValue() + modifier_jitter(tick)
+		-- Auto Yaw is always on: tuned per-weapon/state value scaled by the pitch
+		-- factor (full down = full value, level/up = straight) + Yaw Offset +
+		-- Modifier jitter, built on the chosen base reference.
+		goal = AUTO_YAW[wclass][state] * pfactor + g.yaw_offset:GetValue() + modifier_jitter(tick)
 	end
 
 	-- detect a manual switch: left<->right rotates through the back
@@ -337,21 +350,8 @@ local function pre_move(cmd)
 		va.y = va.y + (((tick % 2) == 0) and SWITCH_JITTER_AMOUNT or -SWITCH_JITTER_AMOUNT)
 	end
 
-	-- pitch
-	local pm = g.pitch:GetValue() -- 0 Disabled,1 Down,2 Up,3 Jitter,4 Zero,5 Fake,6 Custom
-	if pm == 1 then
-		va.x = 89
-	elseif pm == 2 then
-		va.x = -89
-	elseif pm == 3 then
-		va.x = (tick % 2 == 0) and 89 or -89
-	elseif pm == 4 then
-		va.x = 0
-	elseif pm == 5 then
-		va.x = FAKE_PITCH
-	elseif pm == 6 then
-		va.x = g.pitch_value:GetValue()
-	end
+	-- apply pitch (nil = Disabled -> keep the player's pitch)
+	if pitch_val ~= nil then va.x = pitch_val end
 
 	-- anti-invalid clamp
 	if g.anti_invalid:GetValue() then
