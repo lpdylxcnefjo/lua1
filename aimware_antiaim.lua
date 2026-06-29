@@ -121,7 +121,9 @@ end)
 -- state
 -- ============================================================
 local pre_va = EulerAngles(0, 0, 0)
-local duck_can_peek = false -- Duck Peek Auto: enemy in view (computed in Draw)
+local duck_can_peek = false -- Duck Peek: enemy in view (computed in Draw)
+local duck_active   = false -- Duck Peek: toggled on by the bind
+local duck_key_prev = false -- edge detection for the toggle
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -350,14 +352,10 @@ end
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist runs independently of the AA builder.
-	-- hold mode: read our keybox, or fall back to the native "Duck Peek assist".
-	local dk = g.duck_peek:GetValue()
-	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
-	-- while the bind is held: stay crouched, but stand when an enemy is on
-	-- screen (duck_can_peek is computed in Draw, where screen projection works).
-	local hold = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
-	if hold and not duck_can_peek then force_duck(cmd) end
+	-- duck peek assist (toggled on by the bind, handled in Draw): while active
+	-- stay crouched, but stand when an enemy is on screen (duck_can_peek is also
+	-- computed in Draw, where screen projection works). independent of the AA.
+	if duck_active and not duck_can_peek then force_duck(cmd) end
 
 	if not g.master:GetValue() then return end
 
@@ -498,8 +496,16 @@ local function on_draw()
 	g.mod_random:SetInvisible(not (m == 3 or m == 4))
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
 
-	-- Duck Peek: decide "enemy on screen" here (screen projection only works in
-	-- Draw). Full FOV (180), no distance limit. Independent of the AA master.
+	-- Duck Peek: the bind toggles the mode on/off (press = enable, sits + auto
+	-- stands). Read our keybox, or fall back to the native "Duck Peek assist".
+	local dk = g.duck_peek:GetValue()
+	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
+	local down = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
+	if down and not duck_key_prev then duck_active = not duck_active end
+	duck_key_prev = down
+
+	-- decide "enemy on screen" here (screen projection only works in Draw).
+	-- Full FOV (180), no distance limit. Independent of the AA master.
 	local dlp = entities.GetLocalPlayer()
 	local alive = false
 	if dlp then pcall(function() alive = dlp:IsAlive() end) end
