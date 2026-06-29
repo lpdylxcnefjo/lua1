@@ -354,12 +354,17 @@ end
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
-	-- duck peek assist (bind held, handled in Draw): while active stay crouched,
-	-- but stand when an enemy is on screen. After a shot we re-crouch and wait
-	-- ~1.5s (cooldown) before peeking again. Independent of the AA builder.
+	-- duck peek assist (bind held). while active: stay crouched and crawl when
+	-- you're moving (no need to stand in the open); only stand to peek when you
+	-- stop (parked behind cover) AND an enemy is on screen. After a shot we
+	-- re-crouch and wait ~1.5s. Independent of the AA builder.
 	if duck_active then
 		local in_cd = globals.TickCount() < duck_cd_until
-		if in_cd or not duck_can_peek then force_duck(cmd) end
+		local b = cmd:GetButtons()
+		local moving = bit.band(b, MOVE_BITS) ~= 0
+			or math.abs(cmd:GetForwardMove()) > 5 or math.abs(cmd:GetSideMove()) > 5
+		local want_stand = duck_can_peek and not moving and not in_cd
+		if not want_stand then force_duck(cmd) end
 	end
 
 	if not g.master:GetValue() then return end
