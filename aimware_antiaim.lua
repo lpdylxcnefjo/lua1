@@ -124,6 +124,7 @@ end)
 -- state
 -- ============================================================
 local pre_va = EulerAngles(0, 0, 0)
+local duck_can_peek = false -- Duck Peek Auto: enemy in view (computed in Draw)
 local manual = 0 -- 0 none, 1 right, 2 left, 3 forward
 local prev_manual = 0
 local switch_tick = -1000 -- tick of last manual switch (for the shake)
@@ -319,8 +320,9 @@ local function enemy_in_view(lp, fov, range)
 	if not my then return false end
 	local myteam = field_int(lp, "m_iTeamNum")
 	local range2 = (range > 0) and (range * range) or nil
-	local sx, sy = 1920, 1080
+	local sx, sy
 	pcall(function() sx, sy = draw.GetScreenSize() end)
+	if not sx or not sy then sx, sy = 1920, 1080 end
 	local cx, cy = sx / 2, sy / 2
 	local frac = math.max(1, fov) / 180 -- fov 180 = whole screen, 30 = centre
 	local hx, hy = (sx / 2) * frac, (sy / 2) * frac
@@ -356,16 +358,10 @@ local function pre_move(cmd)
 	local dk = g.duck_peek:GetValue()
 	if dk == 0 and native_duck then pcall(function() dk = native_duck:GetValue() end) end
 	local hold = type(dk) == "number" and dk ~= 0 and input.IsButtonDown(dk)
-	-- auto mode: crouch by default, stand only when an enemy is in FOV + range
-	local auto_duck = false
-	if g.duck_auto:GetValue() then
-		local dlp = entities.GetLocalPlayer()
-		local alive = false
-		if dlp then pcall(function() alive = dlp:IsAlive() end) end
-		if alive then
-			auto_duck = not enemy_in_view(dlp, g.duck_fov:GetValue(), g.duck_range:GetValue())
-		end
-	end
+	-- auto mode: crouch by default, stand only when an enemy is in view. the
+	-- "enemy in view" check uses screen projection so it runs in Draw; here we
+	-- just read the flag it set.
+	local auto_duck = g.duck_auto:GetValue() and not duck_can_peek
 	if hold or auto_duck then force_duck(cmd) end
 
 	if not g.master:GetValue() then return end
@@ -506,6 +502,18 @@ local function on_draw()
 	g.mod_delay:SetInvisible(m == 0 or m == 5)
 	g.mod_random:SetInvisible(not (m == 3 or m == 4))
 	g.pitch_value:SetInvisible(g.pitch:GetValue() ~= 6)
+
+	-- Duck Peek Auto: decide here (screen projection only works in Draw),
+	-- independent of the AA builder master switch.
+	if g.duck_auto:GetValue() then
+		local dlp = entities.GetLocalPlayer()
+		local alive = false
+		if dlp then pcall(function() alive = dlp:IsAlive() end) end
+		duck_can_peek = alive
+			and enemy_in_view(dlp, g.duck_fov:GetValue(), g.duck_range:GetValue())
+	else
+		duck_can_peek = false
+	end
 
 	if not g.master:GetValue() then return end
 
